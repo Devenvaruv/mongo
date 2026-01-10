@@ -16,6 +16,7 @@ export interface AgentDoc {
   createdAt: Date;
   updatedAt: Date;
   createdBy: CreatedBy;
+  metadata?: Record<string, unknown>;
 }
 
 export interface AgentVersionDoc {

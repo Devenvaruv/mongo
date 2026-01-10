@@ -7,6 +7,7 @@ import {
   AgentPlanResponse,
   AgentResponse,
   EventDoc,
+  PlanAgentSpec,
   RunDoc,
 } from "./models";
 import { callModel } from "./mockModel";
@@ -84,22 +85,98 @@ async function parseJsonStrict(content: string): Promise<AgentResponse> {
   return parsed as AgentResponse;
 }
 
+interface AgentResolution {
+  requestedSlug: string;
+  agentId: ObjectId;
+  agentVersionId: ObjectId;
+  slug: string;
+  reused: boolean;
+  matchedOn: string;
+  createdNewAgent?: boolean;
+  createdNewVersion?: boolean;
+}
+
+async function findSimilarAgent(
+  spec: PlanAgentSpec,
+  collections: DbCollections
+): Promise<{ agent: AgentDoc; matchedOn: string; latestVersionId: ObjectId } | null> {
+  // Exact slug match first
+  const bySlug = await collections.agents.findOne({ slug: spec.slug });
+  if (bySlug) {
+    return {
+      agent: bySlug,
+      matchedOn: "slug",
+      latestVersionId: bySlug.activeVersionId,
+    };
+  }
+  // Name match (case-insensitive)
+  const byName = await collections.agents.findOne({
+    name: { $regex: new RegExp(`^${spec.name}$`, "i") },
+  });
+  if (byName) {
+    return {
+      agent: byName,
+      matchedOn: "name",
+      latestVersionId: byName.activeVersionId,
+    };
+  }
+  // Tag overlap (if provided)
+  const tags = spec.routingHints?.tags ?? [];
+  if (tags.length > 0) {
+    const byTags = await collections.agents.findOne({ "metadata.tags": { $in: tags } });
+    if (byTags) {
+      return {
+        agent: byTags,
+        matchedOn: "tags",
+        latestVersionId: byTags.activeVersionId,
+      };
+    }
+  }
+  return null;
+}
+
 async function spawnAgentsFromPlan(
   plan: AgentPlanResponse,
   run: RunDoc,
   collections: DbCollections
-) {
-  const agentsCreated: Array<{ slug: string; agentId: ObjectId; agentVersionId: ObjectId }> = [];
-  const agentSpecs = plan.agentsToCreate ?? [];
+): Promise<{ resolutions: Record<string, AgentResolution> }> {
+  const resolutions: Record<string, AgentResolution> = {};
+  const agentSpecs: PlanAgentSpec[] = plan.agentsToCreate ?? [];
   for (const spec of agentSpecs) {
     if (!spec.slug || !spec.name || !spec.systemPrompt) {
       throw new Error("agentsToCreate entries require slug, name, systemPrompt");
     }
     const now = new Date();
-    const existing = await collections.agents.findOne({ slug: spec.slug });
-    if (existing) {
+    const metadata = {
+      origin: {
+        parentRunId: run._id,
+        rootRunId: run.rootRunId ?? run._id,
+        createdByAgentId: run.agentId ?? null,
+        userMessage: run.input.userMessage,
+      },
+      tags: spec.routingHints?.tags ?? [],
+    };
+
+    const similar = await findSimilarAgent(spec, collections);
+    if (similar) {
+      // If the system prompt is identical to latest, just reuse; otherwise, create a new version for same agent.
+      const latestVersion = await collections.agentVersions.findOne({
+        _id: similar.agent.activeVersionId,
+      });
+      if (latestVersion && latestVersion.systemPrompt.trim() === spec.systemPrompt.trim()) {
+        resolutions[spec.slug] = {
+          requestedSlug: spec.slug,
+          slug: similar.agent.slug,
+          agentId: similar.agent._id,
+          agentVersionId: similar.agent.activeVersionId,
+          reused: true,
+          matchedOn: similar.matchedOn,
+        };
+        continue;
+      }
+      // create new version on the existing agent
       const latest = await collections.agentVersions
-        .find({ agentId: existing._id })
+        .find({ agentId: similar.agent._id })
         .sort({ version: -1 })
         .limit(1)
         .next();
@@ -107,7 +184,7 @@ async function spawnAgentsFromPlan(
       const versionId = new ObjectId();
       await collections.agentVersions.insertOne({
         _id: versionId,
-        agentId: existing._id,
+        agentId: similar.agent._id,
         version: nextVersion,
         systemPrompt: spec.systemPrompt,
         resources: spec.resources ?? [],
@@ -117,39 +194,58 @@ async function spawnAgentsFromPlan(
         createdBy: { type: "agent", refId: run.agentId ?? undefined },
       });
       await collections.agents.updateOne(
-        { _id: existing._id },
+        { _id: similar.agent._id },
         { $set: { activeVersionId: versionId, updatedAt: now } }
       );
-      agentsCreated.push({ slug: spec.slug, agentId: existing._id, agentVersionId: versionId });
-    } else {
-      const agentId = new ObjectId();
-      const versionId = new ObjectId();
-      const agent: AgentDoc = {
-        _id: agentId,
-        slug: spec.slug,
-        name: spec.name,
-        description: spec.description,
-        activeVersionId: versionId,
-        createdAt: now,
-        updatedAt: now,
-        createdBy: { type: "agent", refId: run.agentId ?? undefined },
+      resolutions[spec.slug] = {
+        requestedSlug: spec.slug,
+        slug: similar.agent.slug,
+        agentId: similar.agent._id,
+        agentVersionId: versionId,
+        reused: false,
+        matchedOn: `${similar.matchedOn}-updated`,
+        createdNewVersion: true,
       };
-      await collections.agents.insertOne(agent);
-      await collections.agentVersions.insertOne({
-        _id: versionId,
-        agentId,
-        version: 1,
-        systemPrompt: spec.systemPrompt,
-        resources: spec.resources ?? [],
-        ioSchema: spec.ioSchema ?? { output: {} },
-        routingHints: spec.routingHints ?? {},
-        createdAt: now,
-        createdBy: { type: "agent", refId: run.agentId ?? undefined },
-      });
-      agentsCreated.push({ slug: spec.slug, agentId, agentVersionId: versionId });
+      continue;
     }
+
+    // No similar agent; create new
+    const agentId = new ObjectId();
+    const versionId = new ObjectId();
+    const agent: AgentDoc = {
+      _id: agentId,
+      slug: spec.slug,
+      name: spec.name,
+      description: spec.description,
+      activeVersionId: versionId,
+      createdAt: now,
+      updatedAt: now,
+      createdBy: { type: "agent", refId: run.agentId ?? undefined },
+      metadata,
+    };
+    await collections.agents.insertOne(agent);
+    await collections.agentVersions.insertOne({
+      _id: versionId,
+      agentId,
+      version: 1,
+      systemPrompt: spec.systemPrompt,
+      resources: spec.resources ?? [],
+      ioSchema: spec.ioSchema ?? { output: {} },
+      routingHints: spec.routingHints ?? {},
+      createdAt: now,
+      createdBy: { type: "agent", refId: run.agentId ?? undefined },
+    });
+    resolutions[spec.slug] = {
+      requestedSlug: spec.slug,
+      slug: spec.slug,
+      agentId,
+      agentVersionId: versionId,
+      reused: false,
+      matchedOn: "new",
+      createdNewAgent: true,
+    };
   }
-  return agentsCreated;
+  return { resolutions };
 }
 
 async function createChildRun(
@@ -157,9 +253,16 @@ async function createChildRun(
   agentSlug: string,
   userMessage: string | undefined,
   collections: DbCollections,
-  contextData?: Record<string, unknown>
+  contextData?: Record<string, unknown>,
+  resolutions?: Record<string, AgentResolution>
 ): Promise<ObjectId> {
-  const agent = await collections.agents.findOne({ slug: agentSlug });
+  const resolved = resolutions?.[agentSlug];
+  let agent: AgentDoc | null = null;
+  if (resolved) {
+    agent = await collections.agents.findOne({ _id: resolved.agentId });
+  } else {
+    agent = await collections.agents.findOne({ slug: agentSlug });
+  }
   const now = new Date();
   if (!agent) {
     // fallback to bootstrap
@@ -169,7 +272,7 @@ async function createChildRun(
       _id: runId,
       sessionId: parentRun.sessionId,
       agentId: bootstrap.agent._id,
-      agentVersionId: bootstrap.version._id,
+      agentVersionId: resolved?.agentVersionId ?? bootstrap.version._id,
       status: "running",
       parentRunId: parentRun._id,
       rootRunId: parentRun.rootRunId ?? parentRun._id,
@@ -179,8 +282,9 @@ async function createChildRun(
     await collections.runs.insertOne(runDoc);
     return runId;
   }
+  const versionIdToUse = resolved?.agentVersionId ?? agent.activeVersionId;
   const activeVersion = await collections.agentVersions.findOne({
-    _id: agent.activeVersionId,
+    _id: versionIdToUse,
   });
   if (!activeVersion) {
     throw new Error("Child agent active version missing");
@@ -285,9 +389,9 @@ export async function executeRun(runId: ObjectId, collections: DbCollections): P
 
     const normalizedPlan = { ...parsed, agentsToCreate, runsToExecute } as any;
 
-    const created = await spawnAgentsFromPlan(normalizedPlan, run, collections);
-    for (const c of created) {
-      await emit(emitCtx, "SPAWN_AGENT_CREATED", c);
+    const { resolutions } = await spawnAgentsFromPlan(normalizedPlan, run, collections);
+    for (const c of Object.values(resolutions)) {
+      await emit(emitCtx, "SPAWN_AGENT_CREATED", c as any);
     }
 
     const childOutputs: Record<string, unknown> = {};
@@ -302,7 +406,8 @@ export async function executeRun(runId: ObjectId, collections: DbCollections): P
         child.slug,
         child.userMessage,
         collections,
-        contextData
+        contextData,
+        resolutions
       );
       await emit(emitCtx, "CHILD_RUN_STARTED", { childRunId: childRunId.toString(), slug: child.slug });
       try {
@@ -327,8 +432,8 @@ export async function executeRun(runId: ObjectId, collections: DbCollections): P
       result: {
         childResultsBySlug: childOutputs,
         planSummary: {
-          createdAgents: created.map((c) => c.slug),
-          executedAgents: runsToExecute.map((r) => r.slug),
+          createdAgents: Object.values(resolutions).map((r) => r.slug),
+          executedAgents: runsToExecute.map((r: any) => r.slug),
         },
       },
     };

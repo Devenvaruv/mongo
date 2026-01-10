@@ -55,6 +55,10 @@ async function handleAgentList(_params: any, { collections }: { collections: DbC
       slug: a.slug,
       name: a.name,
       description: a.description,
+      createdAt: a.createdAt,
+      updatedAt: a.updatedAt,
+      createdBy: a.createdBy,
+      metadata: a.metadata,
       activeVersionId: a.activeVersionId.toString(),
     })),
   };
