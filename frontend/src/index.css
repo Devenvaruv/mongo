@@ -240,6 +240,16 @@ select.input:focus {
   box-shadow: var(--shadow-sm);
 }
 
+.btn.ghost {
+  background: transparent;
+  color: var(--muted);
+}
+
+.btn.ghost:hover {
+  background: #f3f4f7;
+  color: var(--text);
+}
+
 .btn.primary {
   background: var(--accent);
   color: #ffffff;

@@ -3,9 +3,16 @@ import { Api } from "./api";
 import "./index.css";
 
 type AgentOption = { agentId: string; slug: string; name: string };
+type SessionState = { id: string; expiresAt: number };
+type PlaygroundProps = {
+  sessionId: string;
+  setSessionId: (id: string) => void;
+  endSession: () => void;
+};
 
-function Playground() {
-  const [sessionId, setSessionId] = useState<string>("");
+const SESSION_TTL_MS = 30 * 60 * 1000;
+
+function Playground({ sessionId, setSessionId, endSession }: PlaygroundProps) {
   const [agents, setAgents] = useState<AgentOption[]>([]);
   const [selectedAgentSlug, setSelectedAgentSlug] = useState<string>("bootstrap");
   const [userMessage, setUserMessage] = useState<string>("Plan a demo with 2 helpers");
@@ -30,12 +37,29 @@ function Playground() {
     loadAgents().catch((err) => setError(err.message));
   }, []);
 
-  const createSession = async () => {
-    const resp = await Api.createSession("Playground");
-    setSessionId(resp.sessionId);
+  const resetRunState = () => {
     setRunId(null);
     setEvents([]);
     setRunOutput(null);
+    setRunStatus("");
+    setNextSeq(0);
+    setLoading(false);
+    setError(null);
+  };
+
+  useEffect(() => {
+    resetRunState();
+  }, [sessionId]);
+
+  const createSession = async () => {
+    const resp = await Api.createSession("Playground");
+    setSessionId(resp.sessionId);
+    resetRunState();
+  };
+
+  const handleEndSession = () => {
+    endSession();
+    resetRunState();
   };
 
   const startRun = async () => {
@@ -89,6 +113,7 @@ function Playground() {
   }, [runId, nextSeq]);
 
   const statusLabel = runStatus || "idle";
+  const sessionNote = sessionId ? "Auto-clear after 30 min" : null;
 
   return (
     <section className="card">
@@ -97,7 +122,10 @@ function Playground() {
           <h2 className="card-title">Playground</h2>
           <p className="card-subtitle">Kick off a run and stream events in real time.</p>
         </div>
-        <div className="badge">Session: {sessionId || "none"}</div>
+        <div className="row">
+          <div className="badge">Session: {sessionId || "none"}</div>
+          {sessionNote && <div className="badge subtle">{sessionNote}</div>}
+        </div>
       </div>
 
       <div className="grid-2">
@@ -105,8 +133,11 @@ function Playground() {
           <div className="field">
             <label className="label">Session</label>
             <div className="row">
-              <button className="btn" onClick={createSession}>
+              <button className="btn" onClick={createSession} disabled={!!sessionId}>
                 Create Session
+              </button>
+              <button className="btn ghost" onClick={handleEndSession} disabled={!sessionId}>
+                End Session
               </button>
               <span className="badge subtle">Run: {runId || "none"}</span>
               <span className="status" data-status={statusLabel}>
@@ -388,6 +419,32 @@ function AgentManager() {
 
 export default function App() {
   const [tab, setTab] = useState<"play" | "inspect" | "agents">("play");
+  const [session, setSession] = useState<SessionState | null>(null);
+
+  useEffect(() => {
+    if (!session) return;
+    const remaining = session.expiresAt - Date.now();
+    if (remaining <= 0) {
+      setSession(null);
+      return;
+    }
+    const timeout = window.setTimeout(() => {
+      setSession((current) => {
+        if (!current || current.id !== session.id) return current;
+        return null;
+      });
+    }, remaining);
+    return () => window.clearTimeout(timeout);
+  }, [session]);
+
+  const startSession = (id: string) => {
+    setSession({ id, expiresAt: Date.now() + SESSION_TTL_MS });
+  };
+
+  const endSession = () => {
+    setSession(null);
+  };
+
   return (
     <div className="app">
       <header className="topbar">
@@ -417,7 +474,13 @@ export default function App() {
         </div>
       </header>
       <main className="content">
-        {tab === "play" && <Playground />}
+        {tab === "play" && (
+          <Playground
+            sessionId={session?.id ?? ""}
+            setSessionId={startSession}
+            endSession={endSession}
+          />
+        )}
         {tab === "inspect" && <RunInspector />}
         {tab === "agents" && <AgentManager />}
       </main>
