@@ -44,6 +44,19 @@ async function handleSessionCreate(params: any, { collections }: { collections: 
   return { sessionId: session._id.toString() };
 }
 
+async function handleSessionList(params: any, { collections }: { collections: DbCollections }) {
+  const requestedLimit = Number(params?.limit);
+  const limit = Number.isFinite(requestedLimit)
+    ? Math.min(Math.max(requestedLimit, 1), 200)
+    : 50;
+  const sessions = await collections.sessions
+    .find({}, { projection: { _id: 1, title: 1, createdAt: 1 } })
+    .sort({ createdAt: -1 })
+    .limit(limit)
+    .toArray();
+  return { sessions: sessions.map(serializeDoc) };
+}
+
 async function handleAgentList(_params: any, { collections }: { collections: DbCollections }) {
   const agents = await collections.agents
     .find({}, { projection: { systemPrompt: 0 } })
@@ -233,6 +246,7 @@ async function handleRunTree(params: any, { collections }: { collections: DbColl
 
 const handlers: Record<string, RpcHandler> = {
   "session.create": handleSessionCreate,
+  "session.list": handleSessionList,
   "agent.list": handleAgentList,
   "agent.get": handleAgentGet,
   "agent.updatePrompt": handleAgentUpdatePrompt,

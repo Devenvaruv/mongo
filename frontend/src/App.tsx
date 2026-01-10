@@ -216,16 +216,36 @@ function Playground({ sessionId, setSessionId, endSession }: PlaygroundProps) {
 
 function RunInspector() {
   const [sessionId, setSessionId] = useState("");
+  const [sessions, setSessions] = useState<any[]>([]);
+  const [loadingSessions, setLoadingSessions] = useState(false);
+  const [sessionError, setSessionError] = useState<string | null>(null);
   const [runs, setRuns] = useState<any[]>([]);
   const [selectedRunId, setSelectedRunId] = useState<string>("");
   const [events, setEvents] = useState<any[]>([]);
   const [runDetail, setRunDetail] = useState<any | null>(null);
+
+  const loadSessions = async () => {
+    setLoadingSessions(true);
+    setSessionError(null);
+    try {
+      const resp = await Api.listSessions(30);
+      setSessions(resp.sessions);
+    } catch (err: any) {
+      setSessionError(err.message);
+    } finally {
+      setLoadingSessions(false);
+    }
+  };
 
   const loadTree = async () => {
     if (!sessionId) return;
     const resp = await Api.getRunTree(sessionId);
     setRuns(resp.runs);
   };
+
+  useEffect(() => {
+    void loadSessions();
+  }, []);
 
   const grouped = useMemo(() => {
     const byParent: Record<string, any[]> = {};
@@ -236,6 +256,14 @@ function RunInspector() {
     });
     return byParent;
   }, [runs]);
+
+  const formatSessionLabel = (session: any) => {
+    const createdAt = session?.createdAt ? new Date(session.createdAt) : null;
+    const createdLabel =
+      createdAt && !Number.isNaN(createdAt.getTime()) ? createdAt.toLocaleString() : "unknown";
+    const title = session?.title ? `${session.title} | ` : "";
+    return `${title}${createdLabel} | ${session._id}`;
+  };
 
   const renderBranch = (parentId: string | null, depth = 0) => {
     const children = grouped[parentId ?? "root"] || [];
@@ -269,16 +297,36 @@ function RunInspector() {
           <h2 className="card-title">Run Inspector</h2>
           <p className="card-subtitle">Explore run trees and inspect outputs.</p>
         </div>
-        <div className="row">
-          <input
-            className="input input-inline"
-            value={sessionId}
-            onChange={(e) => setSessionId(e.target.value)}
-            placeholder="Session ID"
-          />
-          <button className="btn" onClick={loadTree} disabled={!sessionId}>
-            Load Runs
-          </button>
+        <div className="stack">
+          <div className="row">
+            <select
+              className="input input-inline"
+              value={sessionId}
+              onChange={(e) => setSessionId(e.target.value)}
+            >
+              <option value="">Select previous session</option>
+              {sessions.map((session) => (
+                <option key={session._id} value={session._id}>
+                  {formatSessionLabel(session)}
+                </option>
+              ))}
+            </select>
+            <button className="btn" onClick={loadSessions} disabled={loadingSessions}>
+              {loadingSessions ? "Refreshing..." : "Refresh Sessions"}
+            </button>
+            {sessionError && <span className="badge subtle">{sessionError}</span>}
+          </div>
+          <div className="row">
+            <input
+              className="input input-inline"
+              value={sessionId}
+              onChange={(e) => setSessionId(e.target.value)}
+              placeholder="Session ID"
+            />
+            <button className="btn" onClick={loadTree} disabled={!sessionId}>
+              Load Runs
+            </button>
+          </div>
         </div>
       </div>
 

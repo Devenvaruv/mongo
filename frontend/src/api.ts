@@ -23,6 +23,9 @@ export const Api = {
   async createSession(title?: string) {
     return rpc<{ sessionId: string }>("session.create", { title });
   },
+  async listSessions(limit?: number) {
+    return rpc<{ sessions: any[] }>("session.list", { limit });
+  },
   async listAgents() {
     return rpc<{ agents: any[] }>("agent.list", {});
   },
