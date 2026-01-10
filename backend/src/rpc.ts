@@ -274,16 +274,31 @@ async function handleRunTree(params: any, { collections }: { collections: DbColl
     throw new Error("sessionId is required");
   }
   const runs = await collections.runs
-    .find({ sessionId: new ObjectId(sessionId) })
-    .project({
-      _id: 1,
-      parentRunId: 1,
-      agentId: 1,
-      status: 1,
-      startedAt: 1,
-      endedAt: 1,
-    })
-    .sort({ startedAt: -1 })
+    .aggregate([
+      { $match: { sessionId: new ObjectId(sessionId) } },
+      { $sort: { startedAt: -1 } },
+      {
+        $lookup: {
+          from: "agents",
+          localField: "agentId",
+          foreignField: "_id",
+          as: "agent",
+        },
+      },
+      { $unwind: { path: "$agent", preserveNullAndEmptyArrays: true } },
+      {
+        $project: {
+          _id: 1,
+          parentRunId: 1,
+          agentId: 1,
+          status: 1,
+          startedAt: 1,
+          endedAt: 1,
+          agentSlug: "$agent.slug",
+          agentName: "$agent.name",
+        },
+      },
+    ])
     .toArray();
   return { runs: runs.map(serializeDoc) };
 }

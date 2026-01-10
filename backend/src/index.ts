@@ -14,6 +14,29 @@ async function start() {
 
   app.post("/rpc", rpcHandler);
 
+   // Well-known agent card: /.well-known/agent-card.json?slug=<agent-slug>
+  app.get("/.well-known/agent-card.json", async (req, res) => {
+    try {
+      const slug = (req.query.slug as string) || "";
+      if (!slug) {
+        return res.status(400).json({ error: "slug query param is required" });
+      }
+      const collections = await getCollections();
+      const agent = await collections.agents.findOne({ slug });
+      if (!agent) {
+        return res.status(404).json({ error: "agent not found" });
+      }
+      const card = (agent as any).metadata?.card;
+      if (!card) {
+        return res.status(404).json({ error: "agent card not found" });
+      }
+      return res.json(card);
+    } catch (err: any) {
+      console.error("well-known agent card error", err);
+      return res.status(500).json({ error: "internal error" });
+    }
+  });
+
   const port = process.env.PORT || 4000;
 
   try {
