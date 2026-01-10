@@ -476,6 +476,10 @@ function RunInspector() {
         <div className="tree-item" style={{ marginLeft: depth * 12 }}>
           <button className="link" onClick={() => selectRun(r._id)}>
             <span className="mono">{r._id}</span>
+            <span className="muted">
+              {" "}
+              {r.agentName || r.agentSlug || r.agentId || "agent"}
+            </span>
           </button>
           <span className="status" data-status={r.status || "unknown"}>
             {r.status || "unknown"}
