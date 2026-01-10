@@ -51,6 +51,12 @@ export const Api = {
       versionId,
     });
   },
+  async getAgentCard(slug: string) {
+    const resp = await axios.get(`${BASE_URL}/.well-known/agent-card.json`, {
+      params: { slug },
+    });
+    return resp.data as any;
+  },
   async startRun(payload: {
     sessionId: string;
     agentSlug?: string;

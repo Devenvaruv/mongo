@@ -581,6 +581,10 @@ function AgentManager() {
   const [loadingVersion, setLoadingVersion] = useState(false);
   const [versionError, setVersionError] = useState<string | null>(null);
   const [settingDefault, setSettingDefault] = useState(false);
+  const [agentCard, setAgentCard] = useState<any | null>(null);
+  const [cardLoading, setCardLoading] = useState(false);
+  const [cardError, setCardError] = useState<string | null>(null);
+  const [cardMissing, setCardMissing] = useState(false);
   const [prompt, setPrompt] = useState<string>("");
   const [agentMeta, setAgentMeta] = useState<any | null>(null);
   const [message, setMessage] = useState<string>("");
@@ -593,6 +597,32 @@ function AgentManager() {
       name: a.name,
     }));
     setAgents(opts);
+  };
+
+  const loadAgentCard = async (slug?: string) => {
+    if (!slug) {
+      setAgentCard(null);
+      return;
+    }
+    setCardLoading(true);
+    setCardError(null);
+    setCardMissing(false);
+    try {
+      const card = await Api.getAgentCard(slug);
+      setAgentCard(card);
+    } catch (err: any) {
+      const status = err?.response?.status;
+      if (status === 404) {
+        setAgentCard(null);
+        setCardMissing(true);
+      } else {
+        const message = err?.response?.data?.error || err?.message || "Failed to load agent card";
+        setCardError(message);
+        setAgentCard(null);
+      }
+    } finally {
+      setCardLoading(false);
+    }
   };
 
   const loadVersion = async (versionId: string, agentId?: string) => {
@@ -625,12 +655,23 @@ function AgentManager() {
   }, []);
 
   useEffect(() => {
+    if (!selectedAgentId && agents.length) {
+      void selectAgent(agents[0].agentId);
+    }
+  }, [agents, selectedAgentId]);
+
+  useEffect(() => {
     if (!selectedVersionId) {
       setSelectedVersion(null);
       return;
     }
     void loadVersion(selectedVersionId, agentMeta?.agent?._id);
   }, [selectedVersionId, agentMeta?.agent?._id]);
+
+  useEffect(() => {
+    if (!agentMeta?.agent?.slug) return;
+    void loadAgentCard(agentMeta.agent.slug);
+  }, [agentMeta?.agent?.slug]);
 
   const selectAgent = async (id: string, preserveMessage = false) => {
     setSelectedAgentId(id);
@@ -640,6 +681,9 @@ function AgentManager() {
     setSelectedVersionId("");
     setSelectedVersion(null);
     setVersionError(null);
+    setAgentCard(null);
+    setCardError(null);
+    setCardMissing(false);
     if (!id) {
       setAgentMeta(null);
       setPrompt("");
@@ -769,6 +813,20 @@ function AgentManager() {
           ) : (
             <>
               <div className="subcard">
+                <div className="subheader">Agent Card</div>
+                {cardLoading ? (
+                  <div className="muted">Loading agent card...</div>
+                ) : cardError ? (
+                  <div className="alert">{cardError}</div>
+                ) : cardMissing ? (
+                  <div className="muted">No agent card found for this agent.</div>
+                ) : agentCard ? (
+                  <pre className="code-block">{JSON.stringify(agentCard, null, 2)}</pre>
+                ) : (
+                  <div className="muted">Select an agent to load its card.</div>
+                )}
+              </div>
+              <div className="subcard">
                 <div className="subheader">Selected Version</div>
                 <div className="stack">
                   {loadingVersion ? (
@@ -791,20 +849,6 @@ function AgentManager() {
                         <label className="label">System Prompt</label>
                         <pre className="code-block">
                           {selectedVersion.systemPrompt || "No prompt"}
-                        </pre>
-                      </div>
-                      <div className="field">
-                        <label className="label">Config</label>
-                        <pre className="code-block">
-                          {JSON.stringify(
-                            {
-                              routingHints: selectedVersion.routingHints ?? null,
-                              resources: selectedVersion.resources ?? [],
-                              ioSchema: selectedVersion.ioSchema ?? null,
-                            },
-                            null,
-                            2
-                          )}
                         </pre>
                       </div>
                     </>
