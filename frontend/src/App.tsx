@@ -14,28 +14,69 @@ const SESSION_TTL_MS = 30 * 60 * 1000;
 
 function Playground({ sessionId, setSessionId, endSession }: PlaygroundProps) {
   const [agents, setAgents] = useState<AgentOption[]>([]);
-  const [selectedAgentSlug, setSelectedAgentSlug] = useState<string>("bootstrap");
-  const [userMessage, setUserMessage] = useState<string>("Plan a demo with 2 helpers");
+  const [selectedAgentSlug, setSelectedAgentSlug] = useState<string>("");
+  const [agentMessage, setAgentMessage] = useState<string>("");
+  const [orchestratorAgentId, setOrchestratorAgentId] = useState<string | null>(null);
+  const [orchestratorPrompt, setOrchestratorPrompt] = useState<string>("");
+  const [orchestratorMessage, setOrchestratorMessage] = useState<string>(
+    "Create 2 specialist agents and 1 reviewer agent for a small demo."
+  );
+  const [orchestratorVersion, setOrchestratorVersion] = useState<number | null>(null);
+  const [orchestratorLoading, setOrchestratorLoading] = useState(false);
+  const [orchestratorSaving, setOrchestratorSaving] = useState(false);
+  const [orchestratorError, setOrchestratorError] = useState<string | null>(null);
+  const [orchestratorNotice, setOrchestratorNotice] = useState<string>("");
   const [runId, setRunId] = useState<string | null>(null);
   const [events, setEvents] = useState<any[]>([]);
   const [nextSeq, setNextSeq] = useState<number>(0);
   const [runOutput, setRunOutput] = useState<any>(null);
   const [runStatus, setRunStatus] = useState<string>("");
+  const [runTarget, setRunTarget] = useState<string>("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const loadAgents = async () => {
     const resp = await Api.listAgents();
-    const opts: AgentOption[] = [
-      { agentId: "bootstrap", slug: "bootstrap", name: "Bootstrap (hardcoded)" },
-      ...resp.agents.map((a) => ({ agentId: a.agentId, slug: a.slug, name: a.name })),
-    ];
+    const opts: AgentOption[] = resp.agents.map((a) => ({
+      agentId: a.agentId,
+      slug: a.slug,
+      name: a.name,
+    }));
     setAgents(opts);
+  };
+
+  const loadOrchestrator = async () => {
+    setOrchestratorLoading(true);
+    setOrchestratorError(null);
+    try {
+      const resp = await Api.getAgent(undefined, "bootstrap");
+      setOrchestratorAgentId(resp.agent?._id ?? null);
+      setOrchestratorPrompt(resp.activeVersion?.systemPrompt || "");
+      setOrchestratorVersion(resp.activeVersion?.version ?? null);
+    } catch (err: any) {
+      setOrchestratorError(err.message);
+    } finally {
+      setOrchestratorLoading(false);
+    }
   };
 
   useEffect(() => {
     loadAgents().catch((err) => setError(err.message));
+    void loadOrchestrator();
   }, []);
+
+  useEffect(() => {
+    const available = agents.filter((agent) => agent.slug !== "bootstrap");
+    if (!available.length) {
+      if (selectedAgentSlug) {
+        setSelectedAgentSlug("");
+      }
+      return;
+    }
+    if (!available.some((agent) => agent.slug === selectedAgentSlug)) {
+      setSelectedAgentSlug(available[0].slug);
+    }
+  }, [agents, selectedAgentSlug]);
 
   const resetRunState = () => {
     setRunId(null);
@@ -43,6 +84,7 @@ function Playground({ sessionId, setSessionId, endSession }: PlaygroundProps) {
     setRunOutput(null);
     setRunStatus("");
     setNextSeq(0);
+    setRunTarget("");
     setLoading(false);
     setError(null);
   };
@@ -62,20 +104,45 @@ function Playground({ sessionId, setSessionId, endSession }: PlaygroundProps) {
     resetRunState();
   };
 
-  const startRun = async () => {
+  const saveOrchestratorPrompt = async () => {
+    if (!orchestratorAgentId) return;
+    if (!orchestratorPrompt.trim()) {
+      setOrchestratorError("System prompt cannot be empty");
+      return;
+    }
+    setOrchestratorSaving(true);
+    setOrchestratorError(null);
+    setOrchestratorNotice("");
+    try {
+      await Api.updatePrompt(orchestratorAgentId, orchestratorPrompt);
+      setOrchestratorNotice("Saved new version");
+      await loadOrchestrator();
+    } catch (err: any) {
+      setOrchestratorError(err.message);
+    } finally {
+      setOrchestratorSaving(false);
+    }
+  };
+
+  const startRunForAgent = async (agentSlug: string, message: string, label: string) => {
     if (!sessionId) {
       setError("Create a session first");
+      return;
+    }
+    if (!message.trim()) {
+      setError("Enter a prompt first");
       return;
     }
     setLoading(true);
     setError(null);
     setEvents([]);
     setRunOutput(null);
+    setRunTarget(label);
     try {
       const resp = await Api.startRun({
         sessionId,
-        agentSlug: selectedAgentSlug,
-        userMessage,
+        agentSlug,
+        userMessage: message,
       });
       setRunId(resp.runId);
       setRunStatus("running");
@@ -87,6 +154,18 @@ function Playground({ sessionId, setSessionId, endSession }: PlaygroundProps) {
     }
   };
 
+  const startOrchestratorRun = async () => {
+    await startRunForAgent("bootstrap", orchestratorMessage, "orchestrator");
+  };
+
+  const startAgentRun = async () => {
+    if (!selectedAgentSlug) {
+      setError("Select an agent to run");
+      return;
+    }
+    await startRunForAgent(selectedAgentSlug, agentMessage, selectedAgentSlug);
+  };
+
   useEffect(() => {
     if (!runId) return;
     const interval = setInterval(async () => {
@@ -95,6 +174,9 @@ function Playground({ sessionId, setSessionId, endSession }: PlaygroundProps) {
         if (ev.events.length) {
           setEvents((prev) => [...prev, ...ev.events]);
           setNextSeq(ev.nextSeq);
+          if (ev.events.some((event: any) => event.type === "SPAWN_AGENT_CREATED")) {
+            loadAgents().catch(() => undefined);
+          }
         }
         const runResp = await Api.getRun(runId);
         setRunStatus(runResp.run.status);
@@ -103,6 +185,7 @@ function Playground({ sessionId, setSessionId, endSession }: PlaygroundProps) {
         }
         if (runResp.run.status !== "running") {
           clearInterval(interval);
+          loadAgents().catch(() => undefined);
         }
       } catch (err: any) {
         setError(err.message);
@@ -114,6 +197,14 @@ function Playground({ sessionId, setSessionId, endSession }: PlaygroundProps) {
 
   const statusLabel = runStatus || "idle";
   const sessionNote = sessionId ? "Auto-clear after 30 min" : null;
+  const taskAgents = agents.filter((agent) => agent.slug !== "bootstrap");
+  const runTargetAgent = agents.find((agent) => agent.slug === runTarget);
+  const runTargetLabel =
+    runTarget === "orchestrator"
+      ? "orchestrator"
+      : runTargetAgent
+      ? `${runTargetAgent.name} (${runTargetAgent.slug})`
+      : runTarget || "none";
 
   return (
     <section className="card">
@@ -140,43 +231,98 @@ function Playground({ sessionId, setSessionId, endSession }: PlaygroundProps) {
                 End Session
               </button>
               <span className="badge subtle">Run: {runId || "none"}</span>
+              <span className="badge subtle">Agent: {runTargetLabel}</span>
               <span className="status" data-status={statusLabel}>
                 Status: {statusLabel}
               </span>
             </div>
           </div>
 
-          <div className="field">
-            <label className="label">Agent</label>
-            <select
-              className="input"
-              value={selectedAgentSlug}
-              onChange={(e) => setSelectedAgentSlug(e.target.value)}
+          <div className="subcard">
+            <div className="subheader">Orchestrator</div>
+            {orchestratorLoading && <div className="muted">Loading orchestrator prompt...</div>}
+            {orchestratorError && <div className="alert">{orchestratorError}</div>}
+            <div className="field">
+              <label className="label">System Prompt (creates agents)</label>
+              <textarea
+                className="textarea"
+                rows={6}
+                value={orchestratorPrompt}
+                onChange={(e) => setOrchestratorPrompt(e.target.value)}
+                placeholder="Orchestrator system prompt"
+              />
+            </div>
+            <div className="row">
+              <button
+                className="btn ghost"
+                onClick={saveOrchestratorPrompt}
+                disabled={!orchestratorAgentId || orchestratorSaving || !orchestratorPrompt.trim()}
+              >
+                {orchestratorSaving ? "Saving..." : "Save prompt"}
+              </button>
+              {orchestratorVersion !== null && (
+                <span className="badge subtle">Active v{orchestratorVersion}</span>
+              )}
+              {orchestratorNotice && <span className="badge subtle">{orchestratorNotice}</span>}
+            </div>
+            <div className="field">
+              <label className="label">Agent Request</label>
+              <textarea
+                className="textarea"
+                rows={4}
+                value={orchestratorMessage}
+                onChange={(e) => setOrchestratorMessage(e.target.value)}
+                placeholder="Describe what agents you want created"
+              />
+            </div>
+            <button
+              className="btn primary"
+              onClick={startOrchestratorRun}
+              disabled={!sessionId || loading || !orchestratorMessage.trim()}
             >
-              {agents.map((a) => (
-                <option key={a.slug} value={a.slug}>
-                  {a.name} ({a.slug})
-                </option>
-              ))}
-            </select>
-          </div>
-
-          <div className="field">
-            <label className="label">Prompt</label>
-            <textarea
-              className="textarea"
-              rows={5}
-              value={userMessage}
-              onChange={(e) => setUserMessage(e.target.value)}
-              placeholder="Enter prompt"
-            />
-          </div>
-
-          <div className="row">
-            <button className="btn primary" onClick={startRun} disabled={!sessionId || loading}>
-              {loading ? "Running..." : "Run"}
+              {loading && runTarget === "orchestrator" ? "Creating..." : "Create agents"}
             </button>
-            <span className="badge subtle">Run ID: {runId || "none"}</span>
+          </div>
+
+          <div className="subcard">
+            <div className="subheader">Run an Agent</div>
+            {taskAgents.length === 0 ? (
+              <div className="muted">No agents yet. Create them above.</div>
+            ) : (
+              <>
+                <div className="field">
+                  <label className="label">Agent</label>
+                  <select
+                    className="input"
+                    value={selectedAgentSlug}
+                    onChange={(e) => setSelectedAgentSlug(e.target.value)}
+                  >
+                    {taskAgents.map((agent) => (
+                      <option key={agent.slug} value={agent.slug}>
+                        {agent.name} ({agent.slug})
+                      </option>
+                    ))}
+                  </select>
+                </div>
+                <div className="field">
+                  <label className="label">Message</label>
+                  <textarea
+                    className="textarea"
+                    rows={4}
+                    value={agentMessage}
+                    onChange={(e) => setAgentMessage(e.target.value)}
+                    placeholder="Send a task to the selected agent"
+                  />
+                </div>
+                <button
+                  className="btn primary"
+                  onClick={startAgentRun}
+                  disabled={!sessionId || loading || !selectedAgentSlug || !agentMessage.trim()}
+                >
+                  {loading && runTarget === selectedAgentSlug ? "Running..." : "Run agent"}
+                </button>
+              </>
+            )}
           </div>
 
           {error && <div className="alert">{error}</div>}

@@ -1,6 +1,6 @@
 import { Request, Response } from "express";
 import { ObjectId } from "mongodb";
-import { ensureBootstrapAgent } from "./bootstrap";
+import { BOOTSTRAP_AGENT_SLUG, ensureBootstrapAgent } from "./bootstrap";
 import { DbCollections, getCollections } from "./db";
 import {
   AgentDoc,
@@ -84,6 +84,10 @@ async function handleAgentGet(params: any, { collections }: { collections: DbCol
     agent = await collections.agents.findOne({ _id: new ObjectId(agentId) });
   } else if (slug) {
     agent = await collections.agents.findOne({ slug });
+  }
+  if (!agent && slug === BOOTSTRAP_AGENT_SLUG) {
+    const bootstrap = await ensureBootstrapAgent(collections);
+    agent = bootstrap.agent;
   }
   if (!agent) {
     throw new Error("Agent not found");
