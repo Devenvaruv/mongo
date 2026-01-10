@@ -262,14 +262,23 @@ export async function executeRun(runId: ObjectId, collections: DbCollections): P
     }
 
     // plan
-    const runsToExecute = parsed.runsToExecute ?? [];
+    // Normalize legacy keys if model replies with "agents" / "runs"
+    const agentsToCreate = (parsed as any).agentsToCreate ?? (parsed as any).agents ?? [];
+    const runsToExecute = (parsed as any).runsToExecute ?? (parsed as any).runs ?? [];
+
+    if (!Array.isArray(agentsToCreate) && !Array.isArray(runsToExecute)) {
+      throw new Error("Plan response missing agentsToCreate/runsToExecute arrays");
+    }
+
     await enforceSpawnCap(run, runsToExecute.length, collections);
     await emit(emitCtx, "SPAWN_AGENT_REQUEST", {
-      agentsToCreate: (parsed.agentsToCreate ?? []).map((a) => a.slug),
-      runsToExecute: runsToExecute.map((r) => r.slug),
+      agentsToCreate: agentsToCreate.map((a: any) => a.slug),
+      runsToExecute: runsToExecute.map((r: any) => r.slug),
     });
 
-    const created = await spawnAgentsFromPlan(parsed, run, collections);
+    const normalizedPlan = { ...parsed, agentsToCreate, runsToExecute } as any;
+
+    const created = await spawnAgentsFromPlan(normalizedPlan, run, collections);
     for (const c of created) {
       await emit(emitCtx, "SPAWN_AGENT_CREATED", c);
     }
