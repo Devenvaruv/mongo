@@ -4,7 +4,7 @@ import "./index.css";
 
 type AgentOption = { agentId: string; slug: string; name: string };
 type SessionState = { id: string; expiresAt: number };
-type PlaygroundProps = {
+type SessionProps = {
   sessionId: string;
   setSessionId: (id: string) => void;
   endSession: () => void;
@@ -12,20 +12,167 @@ type PlaygroundProps = {
 
 const SESSION_TTL_MS = 30 * 60 * 1000;
 
-function Playground({ sessionId, setSessionId, endSession }: PlaygroundProps) {
+function Home({ sessionId, setSessionId, endSession }: SessionProps) {
+  const [agentRequest, setAgentRequest] = useState<string>(
+    "Create 2 specialist agents and 1 reviewer agent for a small demo."
+  );
+  const [runId, setRunId] = useState<string | null>(null);
+  const [runStatus, setRunStatus] = useState<string>("");
+  const [runOutput, setRunOutput] = useState<any>(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const resetRunState = () => {
+    setRunId(null);
+    setRunStatus("");
+    setRunOutput(null);
+    setLoading(false);
+    setError(null);
+  };
+
+  useEffect(() => {
+    resetRunState();
+  }, [sessionId]);
+
+  const createSession = async () => {
+    const resp = await Api.createSession("Playground");
+    setSessionId(resp.sessionId);
+    resetRunState();
+  };
+
+  const handleEndSession = () => {
+    endSession();
+    resetRunState();
+  };
+
+  const startCreateAgents = async () => {
+    if (!sessionId) {
+      setError("Create a session first");
+      return;
+    }
+    if (!agentRequest.trim()) {
+      setError("Enter a request first");
+      return;
+    }
+    setLoading(true);
+    setError(null);
+    setRunOutput(null);
+    try {
+      const resp = await Api.startRun({
+        sessionId,
+        agentSlug: "bootstrap",
+        userMessage: agentRequest,
+      });
+      setRunId(resp.runId);
+      setRunStatus("running");
+    } catch (err: any) {
+      setError(err.message);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    if (!runId) return;
+    const interval = setInterval(async () => {
+      try {
+        const runResp = await Api.getRun(runId);
+        setRunStatus(runResp.run.status);
+        if (runResp.run.output) {
+          setRunOutput(runResp.run.output);
+        }
+        if (runResp.run.status !== "running") {
+          clearInterval(interval);
+        }
+      } catch (err: any) {
+        setError(err.message);
+        clearInterval(interval);
+      }
+    }, 1000);
+    return () => clearInterval(interval);
+  }, [runId]);
+
+  const statusLabel = runStatus || "idle";
+  const sessionNote = sessionId ? "Auto-clear after 30 min" : null;
+
+  return (
+    <section className="card">
+      <div className="card-header">
+        <div>
+          <h2 className="card-title">Home</h2>
+          <p className="card-subtitle">Describe the agents you want to create.</p>
+        </div>
+        <div className="row">
+          <div className="badge">Session: {sessionId || "none"}</div>
+          {sessionNote && <div className="badge subtle">{sessionNote}</div>}
+        </div>
+      </div>
+
+      <div className="grid-2">
+        <div className="stack">
+          <div className="field">
+            <label className="label">Session</label>
+            <div className="row">
+              <button className="btn" onClick={createSession} disabled={!!sessionId}>
+                Create Session
+              </button>
+              <button className="btn ghost" onClick={handleEndSession} disabled={!sessionId}>
+                End Session
+              </button>
+              <span className="badge subtle">Run: {runId || "none"}</span>
+              <span className="status" data-status={statusLabel}>
+                Status: {statusLabel}
+              </span>
+            </div>
+          </div>
+
+          <div className="subcard">
+            <div className="subheader">Create Agents</div>
+            <div className="field">
+              <label className="label">Agent Request</label>
+              <textarea
+                className="textarea"
+                rows={6}
+                value={agentRequest}
+                onChange={(e) => setAgentRequest(e.target.value)}
+                placeholder="Describe what agents you want created"
+              />
+            </div>
+            <button
+              className="btn primary"
+              onClick={startCreateAgents}
+              disabled={!sessionId || loading || !agentRequest.trim()}
+            >
+              {loading ? "Creating..." : "Create agents"}
+            </button>
+          </div>
+
+          {error && <div className="alert">{error}</div>}
+        </div>
+
+        <div className="stack">
+          <div className="subcard">
+            <div className="subheader">Latest Output</div>
+            <pre className="code-block">
+              {runOutput ? JSON.stringify(runOutput, null, 2) : "Awaiting output..."}
+            </pre>
+          </div>
+          <div className="subcard">
+            <div className="subheader">Next Step</div>
+            <div className="muted">
+              Once agents are created, switch to Playground to run them.
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+  );
+}
+
+function Playground({ sessionId, setSessionId, endSession }: SessionProps) {
   const [agents, setAgents] = useState<AgentOption[]>([]);
   const [selectedAgentSlug, setSelectedAgentSlug] = useState<string>("");
   const [agentMessage, setAgentMessage] = useState<string>("");
-  const [orchestratorAgentId, setOrchestratorAgentId] = useState<string | null>(null);
-  const [orchestratorPrompt, setOrchestratorPrompt] = useState<string>("");
-  const [orchestratorMessage, setOrchestratorMessage] = useState<string>(
-    "Create 2 specialist agents and 1 reviewer agent for a small demo."
-  );
-  const [orchestratorVersion, setOrchestratorVersion] = useState<number | null>(null);
-  const [orchestratorLoading, setOrchestratorLoading] = useState(false);
-  const [orchestratorSaving, setOrchestratorSaving] = useState(false);
-  const [orchestratorError, setOrchestratorError] = useState<string | null>(null);
-  const [orchestratorNotice, setOrchestratorNotice] = useState<string>("");
   const [runId, setRunId] = useState<string | null>(null);
   const [events, setEvents] = useState<any[]>([]);
   const [nextSeq, setNextSeq] = useState<number>(0);
@@ -45,24 +192,8 @@ function Playground({ sessionId, setSessionId, endSession }: PlaygroundProps) {
     setAgents(opts);
   };
 
-  const loadOrchestrator = async () => {
-    setOrchestratorLoading(true);
-    setOrchestratorError(null);
-    try {
-      const resp = await Api.getAgent(undefined, "bootstrap");
-      setOrchestratorAgentId(resp.agent?._id ?? null);
-      setOrchestratorPrompt(resp.activeVersion?.systemPrompt || "");
-      setOrchestratorVersion(resp.activeVersion?.version ?? null);
-    } catch (err: any) {
-      setOrchestratorError(err.message);
-    } finally {
-      setOrchestratorLoading(false);
-    }
-  };
-
   useEffect(() => {
     loadAgents().catch((err) => setError(err.message));
-    void loadOrchestrator();
   }, []);
 
   useEffect(() => {
@@ -104,26 +235,6 @@ function Playground({ sessionId, setSessionId, endSession }: PlaygroundProps) {
     resetRunState();
   };
 
-  const saveOrchestratorPrompt = async () => {
-    if (!orchestratorAgentId) return;
-    if (!orchestratorPrompt.trim()) {
-      setOrchestratorError("System prompt cannot be empty");
-      return;
-    }
-    setOrchestratorSaving(true);
-    setOrchestratorError(null);
-    setOrchestratorNotice("");
-    try {
-      await Api.updatePrompt(orchestratorAgentId, orchestratorPrompt);
-      setOrchestratorNotice("Saved new version");
-      await loadOrchestrator();
-    } catch (err: any) {
-      setOrchestratorError(err.message);
-    } finally {
-      setOrchestratorSaving(false);
-    }
-  };
-
   const startRunForAgent = async (agentSlug: string, message: string, label: string) => {
     if (!sessionId) {
       setError("Create a session first");
@@ -152,10 +263,6 @@ function Playground({ sessionId, setSessionId, endSession }: PlaygroundProps) {
     } finally {
       setLoading(false);
     }
-  };
-
-  const startOrchestratorRun = async () => {
-    await startRunForAgent("bootstrap", orchestratorMessage, "orchestrator");
   };
 
   const startAgentRun = async () => {
@@ -199,12 +306,9 @@ function Playground({ sessionId, setSessionId, endSession }: PlaygroundProps) {
   const sessionNote = sessionId ? "Auto-clear after 30 min" : null;
   const taskAgents = agents.filter((agent) => agent.slug !== "bootstrap");
   const runTargetAgent = agents.find((agent) => agent.slug === runTarget);
-  const runTargetLabel =
-    runTarget === "orchestrator"
-      ? "orchestrator"
-      : runTargetAgent
-      ? `${runTargetAgent.name} (${runTargetAgent.slug})`
-      : runTarget || "none";
+  const runTargetLabel = runTargetAgent
+    ? `${runTargetAgent.name} (${runTargetAgent.slug})`
+    : runTarget || "none";
 
   return (
     <section className="card">
@@ -236,52 +340,6 @@ function Playground({ sessionId, setSessionId, endSession }: PlaygroundProps) {
                 Status: {statusLabel}
               </span>
             </div>
-          </div>
-
-          <div className="subcard">
-            <div className="subheader">Orchestrator</div>
-            {orchestratorLoading && <div className="muted">Loading orchestrator prompt...</div>}
-            {orchestratorError && <div className="alert">{orchestratorError}</div>}
-            <div className="field">
-              <label className="label">System Prompt (creates agents)</label>
-              <textarea
-                className="textarea"
-                rows={6}
-                value={orchestratorPrompt}
-                onChange={(e) => setOrchestratorPrompt(e.target.value)}
-                placeholder="Orchestrator system prompt"
-              />
-            </div>
-            <div className="row">
-              <button
-                className="btn ghost"
-                onClick={saveOrchestratorPrompt}
-                disabled={!orchestratorAgentId || orchestratorSaving || !orchestratorPrompt.trim()}
-              >
-                {orchestratorSaving ? "Saving..." : "Save prompt"}
-              </button>
-              {orchestratorVersion !== null && (
-                <span className="badge subtle">Active v{orchestratorVersion}</span>
-              )}
-              {orchestratorNotice && <span className="badge subtle">{orchestratorNotice}</span>}
-            </div>
-            <div className="field">
-              <label className="label">Agent Request</label>
-              <textarea
-                className="textarea"
-                rows={4}
-                value={orchestratorMessage}
-                onChange={(e) => setOrchestratorMessage(e.target.value)}
-                placeholder="Describe what agents you want created"
-              />
-            </div>
-            <button
-              className="btn primary"
-              onClick={startOrchestratorRun}
-              disabled={!sessionId || loading || !orchestratorMessage.trim()}
-            >
-              {loading && runTarget === "orchestrator" ? "Creating..." : "Create agents"}
-            </button>
           </div>
 
           <div className="subcard">
@@ -775,7 +833,7 @@ function AgentManager() {
 }
 
 export default function App() {
-  const [tab, setTab] = useState<"play" | "inspect" | "agents">("play");
+  const [tab, setTab] = useState<"home" | "play" | "inspect" | "agents">("home");
   const [session, setSession] = useState<SessionState | null>(null);
 
   useEffect(() => {
@@ -813,6 +871,9 @@ export default function App() {
           </div>
         </div>
         <div className="tabs">
+          <button className={`tab ${tab === "home" ? "active" : ""}`} onClick={() => setTab("home")}>
+            Home
+          </button>
           <button className={`tab ${tab === "play" ? "active" : ""}`} onClick={() => setTab("play")}>
             Playground
           </button>
@@ -831,6 +892,9 @@ export default function App() {
         </div>
       </header>
       <main className="content">
+        {tab === "home" && (
+          <Home sessionId={session?.id ?? ""} setSessionId={startSession} endSession={endSession} />
+        )}
         {tab === "play" && (
           <Playground
             sessionId={session?.id ?? ""}
