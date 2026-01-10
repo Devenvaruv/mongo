@@ -1,7 +1,13 @@
-﻿# A2A Agents that Create Agents (MVP)
 # A2A Agents that Create Agents (MVP)
 
 Monorepo with `backend` (JSON-RPC orchestrator, Node/TS/Express) and `frontend` (React/Vite) for managing/running agents stored in MongoDB Atlas.
+
+## UI Overview
+
+- Home: create a session, describe the agents you want, and run the orchestrator to create them.
+- Playground: chat with created agents and stream run events/output.
+- Run Inspector: browse past runs by session and inspect details/events.
+- Agent Manager: view agent cards, select versions, and set the default version.
 
 ## Quickstart
 
@@ -23,3 +29,14 @@ npm run dev
 ```
 
 Deploy frontend as static build (`npm run build`) to Vercel; backend runs anywhere Node can reach MongoDB Atlas.
+
+## Agent Cards
+
+Each agent can expose a well-known card endpoint:
+```
+http://localhost:4000/.well-known/agent-card.json?slug=<agent-slug>
+```
+
+## Notes
+
+- MongoDB Atlas must allow your current IP, or the backend will fail to connect.
