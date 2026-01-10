@@ -147,6 +147,29 @@ async function spawnAgentsFromPlan(
       throw new Error("agentsToCreate entries require slug, name, systemPrompt");
     }
     const now = new Date();
+    const card = {
+      protocolVersion: "0.3.0",
+      name: spec.name,
+      description: spec.description ?? spec.name,
+      url: spec.resources?.find((r) => r.type === "url")?.ref ?? "",
+      preferredTransport: "JSONRPC",
+      version: "0.1.0",
+      capabilities: {
+        streaming: false,
+        pushNotifications: false,
+        stateTransitionHistory: false,
+      },
+      defaultInputModes: ["application/json"],
+      defaultOutputModes: ["application/json"],
+      skills: [
+        {
+          id: spec.slug,
+          name: spec.name,
+          description: spec.description ?? spec.name,
+          tags: spec.routingHints?.tags ?? [],
+        },
+      ],
+    };
     const metadata = {
       origin: {
         parentRunId: run._id,
@@ -155,6 +178,7 @@ async function spawnAgentsFromPlan(
         userMessage: run.input.userMessage,
       },
       tags: spec.routingHints?.tags ?? [],
+      card,
     };
 
     const similar = await findSimilarAgent(spec, collections);
@@ -195,7 +219,14 @@ async function spawnAgentsFromPlan(
       });
       await collections.agents.updateOne(
         { _id: similar.agent._id },
-        { $set: { activeVersionId: versionId, updatedAt: now } }
+        {
+          $set: {
+            activeVersionId: versionId,
+            updatedAt: now,
+            metadata: { ...(similar.agent.metadata ?? {}), card },
+            description: spec.description ?? similar.agent.description ?? spec.name,
+          },
+        }
       );
       resolutions[spec.slug] = {
         requestedSlug: spec.slug,
@@ -216,7 +247,7 @@ async function spawnAgentsFromPlan(
       _id: agentId,
       slug: spec.slug,
       name: spec.name,
-      description: spec.description,
+      description: spec.description ?? spec.name,
       activeVersionId: versionId,
       createdAt: now,
       updatedAt: now,
