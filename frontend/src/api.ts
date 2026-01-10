@@ -35,11 +35,20 @@ export const Api = {
       slug,
     });
   },
+  async getAgentVersion(versionId: string, agentId?: string) {
+    return rpc<{ version: any }>("agent.version.get", { versionId, agentId });
+  },
   async updatePrompt(agentId: string, newSystemPrompt: string) {
     return rpc<{ agentVersionId: string; version: number }>("agent.updatePrompt", {
       agentId,
       newSystemPrompt,
       editor: "user",
+    });
+  },
+  async setActiveAgentVersion(agentId: string, versionId: string) {
+    return rpc<{ activeVersionId: string }>("agent.setActiveVersion", {
+      agentId,
+      versionId,
     });
   },
   async startRun(payload: {

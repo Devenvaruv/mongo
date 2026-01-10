@@ -368,6 +368,11 @@ function RunInspector() {
 function AgentManager() {
   const [agents, setAgents] = useState<AgentOption[]>([]);
   const [selectedAgentId, setSelectedAgentId] = useState<string>("");
+  const [selectedVersionId, setSelectedVersionId] = useState<string>("");
+  const [selectedVersion, setSelectedVersion] = useState<any | null>(null);
+  const [loadingVersion, setLoadingVersion] = useState(false);
+  const [versionError, setVersionError] = useState<string | null>(null);
+  const [settingDefault, setSettingDefault] = useState(false);
   const [prompt, setPrompt] = useState<string>("");
   const [agentMeta, setAgentMeta] = useState<any | null>(null);
   const [message, setMessage] = useState<string>("");
@@ -382,22 +387,106 @@ function AgentManager() {
     setAgents(opts);
   };
 
+  const loadVersion = async (versionId: string, agentId?: string) => {
+    if (!versionId) {
+      setSelectedVersion(null);
+      return;
+    }
+    setLoadingVersion(true);
+    setVersionError(null);
+    try {
+      const resp = await Api.getAgentVersion(versionId, agentId);
+      setSelectedVersion(resp.version);
+    } catch (err: any) {
+      setVersionError(err.message);
+      setSelectedVersion(null);
+    } finally {
+      setLoadingVersion(false);
+    }
+  };
+
+  const formatDate = (value?: string) => {
+    if (!value) return "unknown";
+    const parsed = new Date(value);
+    if (Number.isNaN(parsed.getTime())) return "unknown";
+    return parsed.toLocaleString();
+  };
+
   useEffect(() => {
     loadAgents().catch((err) => setMessage(err.message));
   }, []);
 
-  const selectAgent = async (id: string) => {
+  useEffect(() => {
+    if (!selectedVersionId) {
+      setSelectedVersion(null);
+      return;
+    }
+    void loadVersion(selectedVersionId, agentMeta?.agent?._id);
+  }, [selectedVersionId, agentMeta?.agent?._id]);
+
+  const selectAgent = async (id: string, preserveMessage = false) => {
     setSelectedAgentId(id);
-    const resp = await Api.getAgent(id, undefined);
-    setAgentMeta(resp);
-    setPrompt(resp.activeVersion?.systemPrompt || "");
+    if (!preserveMessage) {
+      setMessage("");
+    }
+    setSelectedVersionId("");
+    setSelectedVersion(null);
+    setVersionError(null);
+    if (!id) {
+      setAgentMeta(null);
+      setPrompt("");
+      return;
+    }
+    try {
+      const resp = await Api.getAgent(id, undefined);
+      setAgentMeta(resp);
+      setPrompt(resp.activeVersion?.systemPrompt || "");
+      const activeId = resp.agent?.activeVersionId ?? resp.activeVersion?._id;
+      const nextVersionId = activeId || resp.versions?.[0]?._id || "";
+      setSelectedVersionId(nextVersionId);
+    } catch (err: any) {
+      setMessage(err.message);
+      setAgentMeta(null);
+      setPrompt("");
+    }
   };
 
   const savePrompt = async () => {
     if (!selectedAgentId) return;
-    await Api.updatePrompt(selectedAgentId, prompt);
-    setMessage("Saved new version");
-    await selectAgent(selectedAgentId);
+    try {
+      await Api.updatePrompt(selectedAgentId, prompt);
+      setMessage("Saved new version");
+      await selectAgent(selectedAgentId, true);
+    } catch (err: any) {
+      setMessage(err.message);
+    }
+  };
+
+  const setDefaultVersion = async () => {
+    if (!selectedAgentId || !selectedVersionId) return;
+    setSettingDefault(true);
+    setMessage("");
+    try {
+      await Api.setActiveAgentVersion(selectedAgentId, selectedVersionId);
+      setMessage("Default version updated");
+      await selectAgent(selectedAgentId, true);
+    } catch (err: any) {
+      setMessage(err.message);
+    } finally {
+      setSettingDefault(false);
+    }
+  };
+
+  const activeVersionId = agentMeta?.agent?.activeVersionId ?? agentMeta?.activeVersion?._id;
+  const activeVersionNumber = agentMeta?.versions?.find(
+    (version: any) => version._id === activeVersionId
+  )?.version;
+  const isSelectedActive = !!selectedVersionId && selectedVersionId === activeVersionId;
+  const formatVersionLabel = (version: any) => {
+    const versionNumber = version?.version ?? "?";
+    const createdAt = formatDate(version?.createdAt);
+    const activeLabel = version?._id === activeVersionId ? " (active)" : "";
+    return `v${versionNumber}${activeLabel} | ${createdAt}`;
   };
 
   return (
@@ -434,29 +523,103 @@ function AgentManager() {
           </div>
 
           {agentMeta && (
-            <div className="badge subtle">
-              Versions: {agentMeta.versions.map((v: any) => v.version).join(", ")}
-            </div>
+            <>
+              <div className="field">
+                <label className="label">Version</label>
+                <select
+                  className="input"
+                  value={selectedVersionId}
+                  onChange={(e) => setSelectedVersionId(e.target.value)}
+                >
+                  <option value="">Select version</option>
+                  {agentMeta.versions.map((version: any) => (
+                    <option key={version._id} value={version._id}>
+                      {formatVersionLabel(version)}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              <div className="row">
+                <button
+                  className="btn ghost"
+                  onClick={setDefaultVersion}
+                  disabled={!selectedVersionId || isSelectedActive || settingDefault}
+                >
+                  {settingDefault ? "Setting..." : "Use as default"}
+                </button>
+                {activeVersionNumber !== undefined && activeVersionNumber !== null && (
+                  <span className="badge subtle">Active: v{activeVersionNumber}</span>
+                )}
+              </div>
+            </>
           )}
         </div>
 
         <div className="stack">
           {!agentMeta ? (
-            <div className="empty">Select an agent to edit its system prompt.</div>
+            <div className="empty">Select an agent to view versions and edit prompts.</div>
           ) : (
             <>
-              <div className="field">
-                <label className="label">System Prompt</label>
-                <textarea
-                  className="textarea"
-                  rows={10}
-                  value={prompt}
-                  onChange={(e) => setPrompt(e.target.value)}
-                />
+              <div className="subcard">
+                <div className="subheader">Selected Version</div>
+                <div className="stack">
+                  {loadingVersion ? (
+                    <div className="muted">Loading version...</div>
+                  ) : versionError ? (
+                    <div className="alert">{versionError}</div>
+                  ) : !selectedVersion ? (
+                    <div className="muted">Select a version to view details.</div>
+                  ) : (
+                    <>
+                      <div className="row">
+                        <span className="badge subtle">v{selectedVersion.version ?? "-"}</span>
+                        <span className="badge subtle">{formatDate(selectedVersion.createdAt)}</span>
+                        {selectedVersion.createdBy?.type && (
+                          <span className="badge subtle">By {selectedVersion.createdBy.type}</span>
+                        )}
+                        {isSelectedActive && <span className="badge">Default</span>}
+                      </div>
+                      <div className="field">
+                        <label className="label">System Prompt</label>
+                        <pre className="code-block">
+                          {selectedVersion.systemPrompt || "No prompt"}
+                        </pre>
+                      </div>
+                      <div className="field">
+                        <label className="label">Config</label>
+                        <pre className="code-block">
+                          {JSON.stringify(
+                            {
+                              routingHints: selectedVersion.routingHints ?? null,
+                              resources: selectedVersion.resources ?? [],
+                              ioSchema: selectedVersion.ioSchema ?? null,
+                            },
+                            null,
+                            2
+                          )}
+                        </pre>
+                      </div>
+                    </>
+                  )}
+                </div>
               </div>
-              <button className="btn primary" onClick={savePrompt} disabled={!prompt}>
-                Save new version
-              </button>
+
+              <div className="subcard">
+                <div className="subheader">New Version</div>
+                <div className="muted">Saving creates a new version and sets it as default.</div>
+                <div className="field">
+                  <label className="label">System Prompt</label>
+                  <textarea
+                    className="textarea"
+                    rows={10}
+                    value={prompt}
+                    onChange={(e) => setPrompt(e.target.value)}
+                  />
+                </div>
+                <button className="btn primary" onClick={savePrompt} disabled={!prompt}>
+                  Save new version
+                </button>
+              </div>
             </>
           )}
         </div>

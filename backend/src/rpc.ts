@@ -138,6 +138,46 @@ async function handleAgentUpdatePrompt(params: any, { collections }: { collectio
   return { agentVersionId: versionDoc._id.toString(), version: nextVersion };
 }
 
+async function handleAgentVersionGet(params: any, { collections }: { collections: DbCollections }) {
+  const { versionId, agentId } = params || {};
+  if (!versionId) {
+    throw new Error("versionId is required");
+  }
+  const query: Record<string, any> = { _id: new ObjectId(versionId) };
+  if (agentId) {
+    query.agentId = new ObjectId(agentId);
+  }
+  const version = await collections.agentVersions.findOne(query);
+  if (!version) {
+    throw new Error("Agent version not found");
+  }
+  return { version: serializeDoc(version) };
+}
+
+async function handleAgentSetActiveVersion(
+  params: any,
+  { collections }: { collections: DbCollections }
+) {
+  const { agentId, versionId } = params || {};
+  if (!agentId || !versionId) {
+    throw new Error("agentId and versionId are required");
+  }
+  const agentObjectId = new ObjectId(agentId);
+  const versionObjectId = new ObjectId(versionId);
+  const version = await collections.agentVersions.findOne({
+    _id: versionObjectId,
+    agentId: agentObjectId,
+  });
+  if (!version) {
+    throw new Error("Agent version not found");
+  }
+  await collections.agents.updateOne(
+    { _id: agentObjectId },
+    { $set: { activeVersionId: versionObjectId, updatedAt: new Date() } }
+  );
+  return { activeVersionId: versionObjectId.toString() };
+}
+
 async function resolveAgent(params: any, collections: DbCollections) {
   const { agentId, agentSlug } = params || {};
   let agent: AgentDoc | null = null;
@@ -250,6 +290,8 @@ const handlers: Record<string, RpcHandler> = {
   "agent.list": handleAgentList,
   "agent.get": handleAgentGet,
   "agent.updatePrompt": handleAgentUpdatePrompt,
+  "agent.version.get": handleAgentVersionGet,
+  "agent.setActiveVersion": handleAgentSetActiveVersion,
   "run.start": handleRunStart,
   "run.get": handleRunGet,
   "run.events": handleRunEvents,
