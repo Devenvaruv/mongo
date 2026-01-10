@@ -88,63 +88,98 @@ function Playground() {
     return () => clearInterval(interval);
   }, [runId, nextSeq]);
 
+  const statusLabel = runStatus || "idle";
+
   return (
-    <div className="card">
-      <div className="header">
+    <section className="card">
+      <div className="card-header">
         <div>
-          <button onClick={createSession}>Create Session</button>
-          <span className="muted"> Session: {sessionId || "none"}</span>
+          <h2 className="card-title">Playground</h2>
+          <p className="card-subtitle">Kick off a run and stream events in real time.</p>
         </div>
-        <div>
-          <label>Agent </label>
-          <select
-            value={selectedAgentSlug}
-            onChange={(e) => setSelectedAgentSlug(e.target.value)}
-          >
-            {agents.map((a) => (
-              <option key={a.slug} value={a.slug}>
-                {a.name} ({a.slug})
-              </option>
-            ))}
-          </select>
-        </div>
+        <div className="badge">Session: {sessionId || "none"}</div>
       </div>
 
-      <textarea
-        rows={4}
-        value={userMessage}
-        onChange={(e) => setUserMessage(e.target.value)}
-        placeholder="Enter prompt"
-      />
-      <div>
-        <button onClick={startRun} disabled={!sessionId || loading}>
-          {loading ? "Running..." : "Run"}
-        </button>
-        <span className="muted"> Run: {runId || "none"}</span>
-        <span className="muted"> Status: {runStatus || "-"}</span>
-      </div>
-      {error && <div className="error">{error}</div>}
-      <div className="panel">
-        <div>
-          <h3>Events</h3>
-          <div className="log">
-            {events.map((ev, idx) => (
-              <div key={idx} className="log-line">
-                <code>{ev.seq}</code> <strong>{ev.type}</strong>{" "}
-                <span className="muted">{ev.ts}</span>
-                <pre>{JSON.stringify(ev.payload, null, 2)}</pre>
-              </div>
-            ))}
+      <div className="grid-2">
+        <div className="stack">
+          <div className="field">
+            <label className="label">Session</label>
+            <div className="row">
+              <button className="btn" onClick={createSession}>
+                Create Session
+              </button>
+              <span className="badge subtle">Run: {runId || "none"}</span>
+              <span className="status" data-status={statusLabel}>
+                Status: {statusLabel}
+              </span>
+            </div>
+          </div>
+
+          <div className="field">
+            <label className="label">Agent</label>
+            <select
+              className="input"
+              value={selectedAgentSlug}
+              onChange={(e) => setSelectedAgentSlug(e.target.value)}
+            >
+              {agents.map((a) => (
+                <option key={a.slug} value={a.slug}>
+                  {a.name} ({a.slug})
+                </option>
+              ))}
+            </select>
+          </div>
+
+          <div className="field">
+            <label className="label">Prompt</label>
+            <textarea
+              className="textarea"
+              rows={5}
+              value={userMessage}
+              onChange={(e) => setUserMessage(e.target.value)}
+              placeholder="Enter prompt"
+            />
+          </div>
+
+          <div className="row">
+            <button className="btn primary" onClick={startRun} disabled={!sessionId || loading}>
+              {loading ? "Running..." : "Run"}
+            </button>
+            <span className="badge subtle">Run ID: {runId || "none"}</span>
+          </div>
+
+          {error && <div className="alert">{error}</div>}
+        </div>
+
+        <div className="stack">
+          <div className="subcard">
+            <div className="subheader">Events</div>
+            <div className="log">
+              {events.length === 0 ? (
+                <div className="muted">No events yet.</div>
+              ) : (
+                events.map((ev, idx) => (
+                  <div key={idx} className="log-line">
+                    <div className="log-meta">
+                      <code>{ev.seq}</code>
+                      <span className="tag">{ev.type}</span>
+                      <span className="muted">{ev.ts}</span>
+                    </div>
+                    <pre>{JSON.stringify(ev.payload, null, 2)}</pre>
+                  </div>
+                ))
+              )}
+            </div>
+          </div>
+          <div className="subcard">
+            <div className="subheader">Final Output</div>
+            <pre className="code-block">
+              {runOutput ? JSON.stringify(runOutput, null, 2) : "Awaiting output..."}
+            </pre>
           </div>
         </div>
-        <div>
-          <h3>Final JSON</h3>
-          <pre className="json-box">
-            {runOutput ? JSON.stringify(runOutput, null, 2) : "Awaiting output..."}
-          </pre>
-        </div>
       </div>
-    </div>
+    </section>
   );
 }
 
@@ -174,10 +209,15 @@ function RunInspector() {
   const renderBranch = (parentId: string | null, depth = 0) => {
     const children = grouped[parentId ?? "root"] || [];
     return children.map((r) => (
-      <div key={r._id} style={{ marginLeft: depth * 12 }}>
-        <button className="link" onClick={() => selectRun(r._id)}>
-          {r._id} [{r.status}]
-        </button>
+      <div key={r._id}>
+        <div className="tree-item" style={{ marginLeft: depth * 12 }}>
+          <button className="link" onClick={() => selectRun(r._id)}>
+            <span className="mono">{r._id}</span>
+          </button>
+          <span className="status" data-status={r.status || "unknown"}>
+            {r.status || "unknown"}
+          </span>
+        </div>
         {renderBranch(r._id, depth + 1)}
       </div>
     ));
@@ -192,40 +232,57 @@ function RunInspector() {
   };
 
   return (
-    <div className="card">
-      <div className="header">
-        <input
-          value={sessionId}
-          onChange={(e) => setSessionId(e.target.value)}
-          placeholder="Session ID"
-        />
-        <button onClick={loadTree} disabled={!sessionId}>
-          Load Runs
-        </button>
-      </div>
-      <div className="panel">
+    <section className="card">
+      <div className="card-header">
         <div>
-          <h3>Run Tree</h3>
+          <h2 className="card-title">Run Inspector</h2>
+          <p className="card-subtitle">Explore run trees and inspect outputs.</p>
+        </div>
+        <div className="row">
+          <input
+            className="input input-inline"
+            value={sessionId}
+            onChange={(e) => setSessionId(e.target.value)}
+            placeholder="Session ID"
+          />
+          <button className="btn" onClick={loadTree} disabled={!sessionId}>
+            Load Runs
+          </button>
+        </div>
+      </div>
+
+      <div className="grid-2">
+        <div className="subcard">
+          <div className="subheader">Run Tree</div>
           <div className="log">{renderBranch(null)}</div>
         </div>
-        <div>
-          <h3>Run Detail</h3>
-          <div className="muted">Selected: {selectedRunId || "none"}</div>
-          <pre className="json-box">
+        <div className="subcard">
+          <div className="subheader">Run Detail</div>
+          <div className="row">
+            <span className="badge subtle">Selected: {selectedRunId || "none"}</span>
+          </div>
+          <pre className="code-block">
             {runDetail ? JSON.stringify(runDetail, null, 2) : "Select a run"}
           </pre>
-          <h4>Events</h4>
+          <div className="subheader">Events</div>
           <div className="log">
-            {events.map((ev, idx) => (
-              <div key={idx} className="log-line">
-                <code>{ev.seq}</code> <strong>{ev.type}</strong>
-                <pre>{JSON.stringify(ev.payload, null, 2)}</pre>
-              </div>
-            ))}
+            {events.length === 0 ? (
+              <div className="muted">No events yet.</div>
+            ) : (
+              events.map((ev, idx) => (
+                <div key={idx} className="log-line">
+                  <div className="log-meta">
+                    <code>{ev.seq}</code>
+                    <span className="tag">{ev.type}</span>
+                  </div>
+                  <pre>{JSON.stringify(ev.payload, null, 2)}</pre>
+                </div>
+              ))
+            )}
           </div>
         </div>
       </div>
-    </div>
+    </section>
   );
 }
 
@@ -265,68 +322,105 @@ function AgentManager() {
   };
 
   return (
-    <div className="card">
-      <div className="header">
-        <select
-          value={selectedAgentId}
-          onChange={(e) => selectAgent(e.target.value)}
-        >
-          <option value="">Select agent</option>
-          {agents.map((a) => (
-            <option key={a.agentId} value={a.agentId}>
-              {a.name} ({a.slug})
-            </option>
-          ))}
-        </select>
-        <button onClick={loadAgents}>Refresh</button>
-        {message && <span className="muted">{message}</span>}
-      </div>
-      {agentMeta && (
-        <>
-          <div className="muted">
-            Versions: {agentMeta.versions.map((v: any) => v.version).join(", ")}
-          </div>
-          <textarea
-            rows={8}
-            value={prompt}
-            onChange={(e) => setPrompt(e.target.value)}
-          />
-          <button onClick={savePrompt} disabled={!prompt}>
-            Save new version
+    <section className="card">
+      <div className="card-header">
+        <div>
+          <h2 className="card-title">Agent Manager</h2>
+          <p className="card-subtitle">Edit system prompts and track versions.</p>
+        </div>
+        <div className="row">
+          {message && <span className="badge subtle">{message}</span>}
+          <button className="btn" onClick={loadAgents}>
+            Refresh
           </button>
-        </>
-      )}
-    </div>
+        </div>
+      </div>
+
+      <div className="grid-2">
+        <div className="stack">
+          <div className="field">
+            <label className="label">Agent</label>
+            <select
+              className="input"
+              value={selectedAgentId}
+              onChange={(e) => selectAgent(e.target.value)}
+            >
+              <option value="">Select agent</option>
+              {agents.map((a) => (
+                <option key={a.agentId} value={a.agentId}>
+                  {a.name} ({a.slug})
+                </option>
+              ))}
+            </select>
+          </div>
+
+          {agentMeta && (
+            <div className="badge subtle">
+              Versions: {agentMeta.versions.map((v: any) => v.version).join(", ")}
+            </div>
+          )}
+        </div>
+
+        <div className="stack">
+          {!agentMeta ? (
+            <div className="empty">Select an agent to edit its system prompt.</div>
+          ) : (
+            <>
+              <div className="field">
+                <label className="label">System Prompt</label>
+                <textarea
+                  className="textarea"
+                  rows={10}
+                  value={prompt}
+                  onChange={(e) => setPrompt(e.target.value)}
+                />
+              </div>
+              <button className="btn primary" onClick={savePrompt} disabled={!prompt}>
+                Save new version
+              </button>
+            </>
+          )}
+        </div>
+      </div>
+    </section>
   );
 }
 
 export default function App() {
   const [tab, setTab] = useState<"play" | "inspect" | "agents">("play");
   return (
-    <div className="layout">
-      <header>
-        <h1>A2A Agents that Create Agents</h1>
-        <nav>
-          <button onClick={() => setTab("play")} className={tab === "play" ? "active" : ""}>
+    <div className="app">
+      <header className="topbar">
+        <div className="brand">
+          <div className="brand-mark">A2A</div>
+          <div>
+            <div className="brand-title">Agents that Create Agents</div>
+            <div className="brand-subtitle">Design, run, and inspect agent workflows.</div>
+          </div>
+        </div>
+        <div className="tabs">
+          <button className={`tab ${tab === "play" ? "active" : ""}`} onClick={() => setTab("play")}>
             Playground
           </button>
           <button
+            className={`tab ${tab === "inspect" ? "active" : ""}`}
             onClick={() => setTab("inspect")}
-            className={tab === "inspect" ? "active" : ""}
           >
             Run Inspector
           </button>
           <button
+            className={`tab ${tab === "agents" ? "active" : ""}`}
             onClick={() => setTab("agents")}
-            className={tab === "agents" ? "active" : ""}
           >
             Agent Manager
           </button>
-        </nav>
+        </div>
       </header>
-      {tab === "play" && <Playground />}
-      {tab === "inspect" && <RunInspector />}
-      {tab === "agents" && <AgentManager />}
+      <main className="content">
+        {tab === "play" && <Playground />}
+        {tab === "inspect" && <RunInspector />}
+        {tab === "agents" && <AgentManager />}
+      </main>
     </div>
   );
 }
