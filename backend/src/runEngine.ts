@@ -156,7 +156,8 @@ async function createChildRun(
   parentRun: RunDoc,
   agentSlug: string,
   userMessage: string | undefined,
-  collections: DbCollections
+  collections: DbCollections,
+  contextData?: Record<string, unknown>
 ): Promise<ObjectId> {
   const agent = await collections.agents.findOne({ slug: agentSlug });
   const now = new Date();
@@ -172,7 +173,7 @@ async function createChildRun(
       status: "running",
       parentRunId: parentRun._id,
       rootRunId: parentRun.rootRunId ?? parentRun._id,
-      input: { userMessage: userMessage ?? "" },
+      input: { userMessage: userMessage ?? "", context: contextData },
       startedAt: now,
     };
     await collections.runs.insertOne(runDoc);
@@ -193,7 +194,7 @@ async function createChildRun(
     status: "running",
     parentRunId: parentRun._id,
     rootRunId: parentRun.rootRunId ?? parentRun._id,
-    input: { userMessage: userMessage ?? "" },
+    input: { userMessage: userMessage ?? "", context: contextData },
     startedAt: now,
   };
   await collections.runs.insertOne(runDoc);
@@ -224,7 +225,7 @@ export async function executeRun(runId: ObjectId, collections: DbCollections): P
     const instruction =
       resolved.agent.slug === BOOTSTRAP_AGENT_SLUG
         ? ""
-        : "You must respond with JSON only: either {\"type\":\"final\",\"result\":{...}} or {\"type\":\"plan\",...}.";
+        : "You must respond with JSON only. Prefer {\"type\":\"final\",\"result\":{...}}. Only use {\"type\":\"plan\",...} if you truly need to delegate and you MUST include runsToExecute when you do so.";
     const systemPrompt = `${resolved.systemPrompt}\n${instruction}`.trim();
     const promptHash = buildPromptHash(systemPrompt, run.input.userMessage);
 
@@ -233,11 +234,15 @@ export async function executeRun(runId: ObjectId, collections: DbCollections): P
       promptHash,
     });
 
+    const userContent = run.input.context
+      ? `${run.input.userMessage}\n\nContext:\n${JSON.stringify(run.input.context, null, 2)}`
+      : run.input.userMessage;
+
     const response = await callModel({
       model: "gpt-4o-mini",
       messages: [
         { role: "system", content: systemPrompt },
-        { role: "user", content: run.input.userMessage },
+        { role: "user", content: userContent },
       ],
       temperature: 0.2,
     });
@@ -263,8 +268,10 @@ export async function executeRun(runId: ObjectId, collections: DbCollections): P
 
     // plan
     // Normalize legacy keys if model replies with "agents" / "runs"
-    const agentsToCreate = (parsed as any).agentsToCreate ?? (parsed as any).agents ?? [];
-    const runsToExecute = (parsed as any).runsToExecute ?? (parsed as any).runs ?? [];
+    const agentsToCreate: any[] =
+      (parsed as any).agentsToCreate ?? (parsed as any).agents ?? [];
+    const runsToExecute: any[] =
+      (parsed as any).runsToExecute ?? (parsed as any).runs ?? [];
 
     if (!Array.isArray(agentsToCreate) && !Array.isArray(runsToExecute)) {
       throw new Error("Plan response missing agentsToCreate/runsToExecute arrays");
@@ -285,7 +292,18 @@ export async function executeRun(runId: ObjectId, collections: DbCollections): P
 
     const childOutputs: Record<string, unknown> = {};
     for (const child of runsToExecute) {
-      const childRunId = await createChildRun(run, child.slug, child.userMessage, collections);
+      const contextData: Record<string, unknown> = {
+        parentPlan: parsed,
+        previousResults: childOutputs,
+        explicitContext: child.context ?? null,
+      };
+      const childRunId = await createChildRun(
+        run,
+        child.slug,
+        child.userMessage,
+        collections,
+        contextData
+      );
       await emit(emitCtx, "CHILD_RUN_STARTED", { childRunId: childRunId.toString(), slug: child.slug });
       try {
         await executeRun(childRunId, collections);

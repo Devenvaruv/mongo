@@ -12,7 +12,7 @@ Rules:
 - For plans, you MUST use the exact fields: "agentsToCreate" (array) and "runsToExecute" (array). Do NOT use "agents" or "runs".
 - Prefer emitting a plan with up to 3-5 agents: planner, 1-2 specialists, optional merger.
 - Each agent definition requires: slug, name, systemPrompt.
-- Each run to execute requires: slug and userMessage (context optional).
+- Each run to execute requires: slug and userMessage (context optional). Order runs so later runs can use outputs from earlier runs.
 - Use mergeStrategy "compose".
 - Make sure system prompts instruct assistants to return JSON ONLY with either {"type":"final", ...} or {"type":"plan", ...}.
 `;
