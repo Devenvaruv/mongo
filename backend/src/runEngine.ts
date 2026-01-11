@@ -12,6 +12,8 @@ import {
 } from "./models";
 import { callModel } from "./mockModel";
 
+const DEFAULT_MODEL = process.env.MODEL_NAME || "gpt-4o";
+
 interface EmitOptions {
   runId: ObjectId;
   collections: DbCollections;
@@ -196,8 +198,8 @@ async function spawnAgentsFromPlan(
       card,
     };
 
-    const similar = await findSimilarAgent(spec, collections);
-    if (similar) {
+  const similar = await findSimilarAgent(spec, collections);
+  if (similar) {
       // If the system prompt is identical to latest, just reuse; otherwise, create a new version for same agent.
       const latestVersion = await collections.agentVersions.findOne({
         _id: similar.agent.activeVersionId,
@@ -355,8 +357,11 @@ async function enforceSpawnCap(run: RunDoc, requestedChildren: number, collectio
   const rootId = run.rootRunId ?? run._id;
   const existing = await collections.runs.countDocuments({ rootRunId: rootId });
   const alreadySpawned = Math.max(0, existing - 1); // exclude root run
-  if (alreadySpawned + requestedChildren > 5) {
-    throw new Error(`Spawn cap exceeded (current: ${alreadySpawned}, requested: ${requestedChildren}, limit: 5)`);
+  const limit = 10;
+  if (alreadySpawned + requestedChildren > limit) {
+    throw new Error(
+      `Spawn cap exceeded (current: ${alreadySpawned}, requested: ${requestedChildren}, limit: ${limit})`
+    );
   }
 }
 
@@ -378,6 +383,7 @@ export async function executeRun(runId: ObjectId, collections: DbCollections): P
       "Only create new agents when necessary and include them in agentsToCreate.",
       "Before creating new agents, check Context.availableAgents; if you need a refresh, call Context.a2a.directoryAgent.slug.",
       "Use Context.availableAgents to decide which agent to call, then reference its slug in runsToExecute.",
+      "Use Context.availableAgents to decide which agent to call, then reference its slug in runsToExecute.",
       "Context.availableAgents lists known agents; Context.a2a.directoryAgent is a hidden helper you can call for a roster refresh.",
       "All responses must be JSON only with type \"final\" or \"plan\".",
     ].join("\n");
@@ -389,7 +395,7 @@ export async function executeRun(runId: ObjectId, collections: DbCollections): P
     const promptHash = buildPromptHash(systemPrompt, run.input.userMessage);
 
     await emit(emitCtx, "MODEL_REQUEST", {
-      model: "gpt-4o-mini",
+      model: DEFAULT_MODEL,
       promptHash,
     });
 
@@ -413,7 +419,7 @@ export async function executeRun(runId: ObjectId, collections: DbCollections): P
     )}`;
 
     const response = await callModel({
-      model: "gpt-4o-mini",
+      model: DEFAULT_MODEL,
       messages: [
         { role: "system", content: systemPrompt },
         { role: "user", content: userContent },
