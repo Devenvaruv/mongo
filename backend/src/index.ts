@@ -3,7 +3,7 @@ import cors from "cors";
 import dotenv from "dotenv";
 import { ensureIndexes, getCollections } from "./db";
 import { rpcHandler } from "./rpc";
-import { ensureBootstrapAgent } from "./bootstrap";
+import { ensureBootstrapAgent, ensureDirectoryAgent } from "./bootstrap";
 
 dotenv.config();
 
@@ -43,6 +43,7 @@ async function start() {
     const collections = await getCollections();
     await ensureIndexes(collections);
     await ensureBootstrapAgent(collections);
+    await ensureDirectoryAgent(collections);
     app.listen(port, () => {
       console.log(`JSON-RPC server listening on http://localhost:${port}`);
     });

@@ -1,6 +1,6 @@
 import crypto from "crypto";
 import { ObjectId } from "mongodb";
-import { ensureBootstrapAgent, BOOTSTRAP_AGENT_SLUG } from "./bootstrap";
+import { ensureBootstrapAgent, BOOTSTRAP_AGENT_SLUG, DIRECTORY_AGENT_SLUG } from "./bootstrap";
 import { DbCollections } from "./db";
 import {
   AgentDoc,
@@ -83,6 +83,21 @@ async function parseJsonStrict(content: string): Promise<AgentResponse> {
     throw new Error("Model response missing type plan/final");
   }
   return parsed as AgentResponse;
+}
+
+async function listAvailableAgents(collections: DbCollections) {
+  const agents = await collections.agents
+    .find({}, { projection: { slug: 1, name: 1, description: 1, metadata: 1 } })
+    .sort({ createdAt: 1 })
+    .toArray();
+  return agents.map((agent) => ({
+    slug: agent.slug,
+    name: agent.name,
+    description: agent.description ?? agent.name,
+    tags: (agent.metadata as any)?.tags ?? [],
+    system: (agent.metadata as any)?.system ?? false,
+    hidden: (agent.metadata as any)?.hidden ?? false,
+  }));
 }
 
 interface AgentResolution {
@@ -357,10 +372,17 @@ export async function executeRun(runId: ObjectId, collections: DbCollections): P
       slug: resolved.agent.slug,
     });
 
+    const a2aInstruction = [
+      "You are an agent in an A2A (agent-to-agent) system.",
+      "You may delegate by returning {\"type\":\"plan\",...} with runsToExecute referencing existing agents by slug.",
+      "Only create new agents when necessary and include them in agentsToCreate.",
+      "Context.availableAgents lists known agents; Context.a2a.directoryAgent is a hidden helper you can call for a roster refresh.",
+      "All responses must be JSON only with type \"final\" or \"plan\".",
+    ].join("\n");
     const instruction =
       resolved.agent.slug === BOOTSTRAP_AGENT_SLUG
-        ? ""
-        : "You must respond with JSON only. Prefer {\"type\":\"final\",\"result\":{...}}. Only use {\"type\":\"plan\",...} if you truly need to delegate and you MUST include runsToExecute when you do so.";
+        ? a2aInstruction
+        : `${a2aInstruction}\nPrefer {\"type\":\"final\",\"result\":{...}} unless delegation is required.`;
     const systemPrompt = `${resolved.systemPrompt}\n${instruction}`.trim();
     const promptHash = buildPromptHash(systemPrompt, run.input.userMessage);
 
@@ -369,9 +391,24 @@ export async function executeRun(runId: ObjectId, collections: DbCollections): P
       promptHash,
     });
 
-    const userContent = run.input.context
-      ? `${run.input.userMessage}\n\nContext:\n${JSON.stringify(run.input.context, null, 2)}`
-      : run.input.userMessage;
+    const availableAgents = await listAvailableAgents(collections);
+    const baseContext = run.input.context ?? {};
+    const contextData = {
+      ...baseContext,
+      availableAgents,
+      a2a: {
+        ...(baseContext as any)?.a2a,
+        directoryAgent: {
+          slug: DIRECTORY_AGENT_SLUG,
+          purpose: "Returns the current agent roster.",
+        },
+      },
+    };
+    const userContent = `${run.input.userMessage}\n\nContext:\n${JSON.stringify(
+      contextData,
+      null,
+      2
+    )}`;
 
     const response = await callModel({
       model: "gpt-4o-mini",

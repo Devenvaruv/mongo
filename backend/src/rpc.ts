@@ -1,6 +1,11 @@
 import { Request, Response } from "express";
 import { ObjectId } from "mongodb";
-import { BOOTSTRAP_AGENT_SLUG, ensureBootstrapAgent } from "./bootstrap";
+import {
+  BOOTSTRAP_AGENT_SLUG,
+  DIRECTORY_AGENT_SLUG,
+  ensureBootstrapAgent,
+  ensureDirectoryAgent,
+} from "./bootstrap";
 import { DbCollections, getCollections } from "./db";
 import {
   AgentDoc,
@@ -58,8 +63,10 @@ async function handleSessionList(params: any, { collections }: { collections: Db
 }
 
 async function handleAgentList(_params: any, { collections }: { collections: DbCollections }) {
+  const includeHidden = _params?.includeHidden === true;
+  const filter = includeHidden ? {} : { "metadata.hidden": { $ne: true } };
   const agents = await collections.agents
-    .find({}, { projection: { systemPrompt: 0 } })
+    .find(filter, { projection: { systemPrompt: 0 } })
     .sort({ createdAt: -1 })
     .toArray();
   return {
@@ -88,6 +95,10 @@ async function handleAgentGet(params: any, { collections }: { collections: DbCol
   if (!agent && slug === BOOTSTRAP_AGENT_SLUG) {
     const bootstrap = await ensureBootstrapAgent(collections);
     agent = bootstrap.agent;
+  }
+  if (!agent && slug === DIRECTORY_AGENT_SLUG) {
+    const directory = await ensureDirectoryAgent(collections);
+    agent = directory.agent;
   }
   if (!agent) {
     throw new Error("Agent not found");
