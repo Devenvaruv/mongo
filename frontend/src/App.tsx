@@ -10,7 +10,63 @@ type SessionProps = {
   endSession: () => void;
 };
 
+type Delegation = {
+  id: string;
+  from: string;
+  to: string;
+  status: string;
+  startedAt?: string;
+  finishedAt?: string;
+};
+
 const SESSION_TTL_MS = 30 * 60 * 1000;
+
+const normalizeStatus = (value?: string) => {
+  const next = value?.toLowerCase();
+  if (next === "running" || next === "succeeded" || next === "failed") {
+    return next;
+  }
+  return "unknown";
+};
+
+const formatTimestamp = (value?: string) => {
+  if (!value) return "";
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) return value;
+  return parsed.toLocaleTimeString();
+};
+
+const buildDelegations = (events: any[], fallbackFrom: string): Delegation[] => {
+  const calls = new Map<string, Delegation>();
+  const from = fallbackFrom || "agent";
+  events.forEach((ev) => {
+    if (ev.type === "CHILD_RUN_STARTED") {
+      const childRunId = ev.payload?.childRunId || `child-${calls.size + 1}`;
+      const toSlug = ev.payload?.slug || "unknown";
+      calls.set(childRunId, {
+        id: childRunId,
+        from,
+        to: toSlug,
+        status: "running",
+        startedAt: ev.ts,
+      });
+    }
+    if (ev.type === "CHILD_RUN_FINISHED") {
+      const childRunId = ev.payload?.childRunId;
+      if (!childRunId) return;
+      const existing = calls.get(childRunId);
+      calls.set(childRunId, {
+        id: childRunId,
+        from: existing?.from ?? from,
+        to: existing?.to ?? "unknown",
+        status: normalizeStatus(ev.payload?.status),
+        startedAt: existing?.startedAt,
+        finishedAt: ev.ts,
+      });
+    }
+  });
+  return Array.from(calls.values());
+};
 
 function Home({ sessionId, setSessionId, endSession }: SessionProps) {
   const [agentRequest, setAgentRequest] = useState<string>(
@@ -19,6 +75,8 @@ function Home({ sessionId, setSessionId, endSession }: SessionProps) {
   const [runId, setRunId] = useState<string | null>(null);
   const [runStatus, setRunStatus] = useState<string>("");
   const [runOutput, setRunOutput] = useState<any>(null);
+  const [events, setEvents] = useState<any[]>([]);
+  const [nextSeq, setNextSeq] = useState<number>(0);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -26,6 +84,8 @@ function Home({ sessionId, setSessionId, endSession }: SessionProps) {
     setRunId(null);
     setRunStatus("");
     setRunOutput(null);
+    setEvents([]);
+    setNextSeq(0);
     setLoading(false);
     setError(null);
   };
@@ -57,6 +117,8 @@ function Home({ sessionId, setSessionId, endSession }: SessionProps) {
     setLoading(true);
     setError(null);
     setRunOutput(null);
+    setEvents([]);
+    setNextSeq(0);
     try {
       const resp = await Api.startRun({
         sessionId,
@@ -76,6 +138,11 @@ function Home({ sessionId, setSessionId, endSession }: SessionProps) {
     if (!runId) return;
     const interval = setInterval(async () => {
       try {
+        const ev = await Api.getRunEvents(runId, nextSeq);
+        if (ev.events.length) {
+          setEvents((prev) => [...prev, ...ev.events]);
+          setNextSeq(ev.nextSeq);
+        }
         const runResp = await Api.getRun(runId);
         setRunStatus(runResp.run.status);
         if (runResp.run.output) {
@@ -90,10 +157,11 @@ function Home({ sessionId, setSessionId, endSession }: SessionProps) {
       }
     }, 1000);
     return () => clearInterval(interval);
-  }, [runId]);
+  }, [runId, nextSeq]);
 
   const statusLabel = runStatus || "idle";
   const sessionNote = sessionId ? "Auto-clear after 30 min" : null;
+  const delegations = useMemo(() => buildDelegations(events, "bootstrap"), [events]);
 
   return (
     <section className="card">
@@ -151,6 +219,30 @@ function Home({ sessionId, setSessionId, endSession }: SessionProps) {
         </div>
 
         <div className="stack">
+          <div className="subcard">
+            <div className="subheader">Live Delegations</div>
+            <div className="log">
+              {delegations.length === 0 ? (
+                <div className="muted">No agent-to-agent calls yet.</div>
+              ) : (
+                delegations.map((call) => (
+                  <div key={call.id} className="log-line">
+                    <div className="log-meta">
+                      <span className="badge subtle">{call.from}</span>
+                      <span className="muted">-&gt;</span>
+                      <span className="badge subtle">{call.to}</span>
+                      <span className="status" data-status={call.status}>
+                        {call.status}
+                      </span>
+                      {call.startedAt && (
+                        <span className="muted">{formatTimestamp(call.startedAt)}</span>
+                      )}
+                    </div>
+                  </div>
+                ))
+              )}
+            </div>
+          </div>
           <div className="subcard">
             <div className="subheader">Latest Output</div>
             <pre className="code-block">
@@ -309,6 +401,10 @@ function Playground({ sessionId, setSessionId, endSession }: SessionProps) {
   const runTargetLabel = runTargetAgent
     ? `${runTargetAgent.name} (${runTargetAgent.slug})`
     : runTarget || "none";
+  const delegations = useMemo(
+    () => buildDelegations(events, runTarget || "agent"),
+    [events, runTarget]
+  );
 
   return (
     <section className="card">
@@ -387,6 +483,30 @@ function Playground({ sessionId, setSessionId, endSession }: SessionProps) {
         </div>
 
         <div className="stack">
+          <div className="subcard">
+            <div className="subheader">Live Delegations</div>
+            <div className="log">
+              {delegations.length === 0 ? (
+                <div className="muted">No agent-to-agent calls yet.</div>
+              ) : (
+                delegations.map((call) => (
+                  <div key={call.id} className="log-line">
+                    <div className="log-meta">
+                      <span className="badge subtle">{call.from}</span>
+                      <span className="muted">-&gt;</span>
+                      <span className="badge subtle">{call.to}</span>
+                      <span className="status" data-status={call.status}>
+                        {call.status}
+                      </span>
+                      {call.startedAt && (
+                        <span className="muted">{formatTimestamp(call.startedAt)}</span>
+                      )}
+                    </div>
+                  </div>
+                ))
+              )}
+            </div>
+          </div>
           <div className="subcard">
             <div className="subheader">Events</div>
             <div className="log">
