@@ -10,7 +10,7 @@ interface CallModelOptions {
   mockPlan?: AgentResponse;
 }
 
-const DEFAULT_MODEL = "gpt-4o-mini";
+const DEFAULT_MODEL = process.env.MODEL_NAME || "gpt-4o";
 
 export async function callModel(
   request: ModelRequest,

@@ -8,7 +8,10 @@ JSON-RPC orchestrator that stores agents, versions, runs, and events in MongoDB 
 - Env vars:
   - `MONGODB_URI` (required)
   - `MONGODB_DB` (default: `a2a`)
+  - `MODEL_NAME` (optional; default: `gpt-4o`)
   - `OPENAI_API_KEY` (optional; if absent uses mock model)
+  - `FIREWORKS_API_KEY` (optional; if set, uses Fireworks instead of OpenAI)
+  - `FIREWORKS_MODEL` (optional; default `accounts/fireworks/models/deepseek-v3p2`)
   - `PORT` (default: `4000`)
 
 ## Commands
