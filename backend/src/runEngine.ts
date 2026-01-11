@@ -376,6 +376,7 @@ export async function executeRun(runId: ObjectId, collections: DbCollections): P
       "You are an agent in an A2A (agent-to-agent) system.",
       "You may delegate by returning {\"type\":\"plan\",...} with runsToExecute referencing existing agents by slug.",
       "Only create new agents when necessary and include them in agentsToCreate.",
+      "Before creating new agents, check Context.availableAgents; if you need a refresh, call Context.a2a.directoryAgent.slug.",
       "Context.availableAgents lists known agents; Context.a2a.directoryAgent is a hidden helper you can call for a roster refresh.",
       "All responses must be JSON only with type \"final\" or \"plan\".",
     ].join("\n");

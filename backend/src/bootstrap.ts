@@ -23,6 +23,7 @@ A2A compliance:
 - Every agent you create MUST be able to delegate to other agents by returning {"type":"plan", ...}.
 - Each created agent's systemPrompt must explicitly say it can call other agents by slug using runsToExecute.
 - Agents will receive Context.availableAgents (list of known agents) and Context.a2a.directoryAgent for the directory helper.
+- Before creating any new agent, you MUST check if an existing agent can do the task. Use Context.availableAgents; if you need a refresh, run the directory agent (slug "a2a_directory") via runsToExecute. If a suitable agent exists, use runsToExecute with its slug and DO NOT include it in agentsToCreate.
 Rules:
 - Always emit a JSON object with either {"type":"plan", ...} or {"type":"final", ...}.
 - For plans, you MUST use the exact fields: "agentsToCreate" (array) and "runsToExecute" (array). Do NOT use "agents" or "runs".
