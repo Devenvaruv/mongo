@@ -46,6 +46,9 @@ export async function getCollections(): Promise<DbCollections> {
 
 export async function ensureIndexes(collections: DbCollections) {
   await collections.agents.createIndex({ slug: 1 }, { unique: true });
+  await collections.agents.createIndex({ "metadata.role": 1 });
+  await collections.agents.createIndex({ "metadata.domains": 1 });
+  await collections.agents.createIndex({ "metadata.tags": 1 });
   await collections.agentVersions.createIndex({ agentId: 1, version: -1 });
   await collections.agentVersions.createIndex({ agentId: 1 });
   await collections.sessions.createIndex({ createdAt: -1 });

@@ -1,6 +1,6 @@
 import dotenv from "dotenv";
 import { ObjectId } from "mongodb";
-import { ensureBootstrapAgent, ensureDirectoryAgent } from "./bootstrap";
+import { ensureBootstrapAgent, ensureDirectoryAgent, ensureMainRouterAgent } from "./bootstrap";
 import { ensureIndexes, getCollections } from "./db";
 
 dotenv.config();
@@ -10,6 +10,7 @@ async function seed() {
   await ensureIndexes(collections);
   await ensureBootstrapAgent(collections);
   await ensureDirectoryAgent(collections);
+  await ensureMainRouterAgent(collections);
 
   const slug = "demo-echo";
   const existing = await collections.agents.findOne({ slug });
@@ -29,6 +30,7 @@ async function seed() {
     createdAt: now,
     updatedAt: now,
     createdBy: { type: "system" },
+    metadata: { role: "specialist", domains: ["demo"], tags: ["demo"] },
   });
   await collections.agentVersions.insertOne({
     _id: versionId,

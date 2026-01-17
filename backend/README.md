@@ -13,6 +13,12 @@ JSON-RPC orchestrator that stores agents, versions, runs, and events in MongoDB 
   - `FIREWORKS_API_KEY` (optional; if set, uses Fireworks instead of OpenAI)
   - `FIREWORKS_MODEL` (optional; default `accounts/fireworks/models/deepseek-v3p2`)
   - `PORT` (default: `4000`)
+  - `A2A_MAX_DEPTH` (optional; default: `2`)
+  - `A2A_MAX_CHILDREN` (optional; default: `3`)
+  - `A2A_ROUTER_INDEX_LIMIT` (optional; default: `50`)
+  - `A2A_SPECIALIST_INDEX_LIMIT` (optional; default: `50`)
+  - `MAIN_ROUTER_SLUG` (optional; default: `company_router`)
+  - `MAIN_ROUTER_NAME` (optional; default: `Company Router`)
 
 ## Commands
 
@@ -23,6 +29,7 @@ npm run dev      # ts-node-dev
 npm run build    # emit dist
 npm run start    # run compiled
 npm run seed     # seed demo agent + bootstrap
+npm run test     # run unit tests
 ```
 
 ## JSON-RPC Endpoint

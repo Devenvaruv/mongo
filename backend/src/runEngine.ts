@@ -4,6 +4,7 @@ import { ensureBootstrapAgent, BOOTSTRAP_AGENT_SLUG, DIRECTORY_AGENT_SLUG } from
 import { DbCollections } from "./db";
 import {
   AgentDoc,
+  AgentMetadata,
   AgentPlanResponse,
   AgentResponse,
   EventDoc,
@@ -11,8 +12,37 @@ import {
   RunDoc,
 } from "./models";
 import { callModel } from "./mockModel";
+import {
+  AgentSummaryItem,
+  RoutingState,
+  buildAgentSummaryItem,
+  buildRouterIndex,
+  buildSpecialistIndex,
+  extractDomainsFromTags,
+  inferRoleFromTags,
+  mergeStringArrays,
+  normalizeAgentRole,
+  normalizeStringArray,
+  readRoutingState,
+  summarizeAvailableAgents,
+  summarizePreviousResults,
+} from "./routingUtils";
 
 const DEFAULT_MODEL = process.env.MODEL_NAME || "gpt-4o";
+const ROUTING_POLICY = {
+  maxDepth: parsePositiveInt(process.env.A2A_MAX_DEPTH, 2),
+  maxChildren: parsePositiveInt(process.env.A2A_MAX_CHILDREN, 3),
+};
+const ROUTER_INDEX_LIMIT = parsePositiveInt(process.env.A2A_ROUTER_INDEX_LIMIT, 50);
+const SPECIALIST_INDEX_LIMIT = parsePositiveInt(process.env.A2A_SPECIALIST_INDEX_LIMIT, 50);
+
+function parsePositiveInt(value: string | undefined, fallback: number): number {
+  const parsed = Number.parseInt(value ?? "", 10);
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    return fallback;
+  }
+  return parsed;
+}
 
 interface EmitOptions {
   runId: ObjectId;
@@ -87,19 +117,12 @@ async function parseJsonStrict(content: string): Promise<AgentResponse> {
   return parsed as AgentResponse;
 }
 
-async function listAvailableAgents(collections: DbCollections) {
+async function listAvailableAgents(collections: DbCollections): Promise<AgentSummaryItem[]> {
   const agents = await collections.agents
     .find({}, { projection: { slug: 1, name: 1, description: 1, metadata: 1 } })
     .sort({ createdAt: 1 })
     .toArray();
-  return agents.map((agent) => ({
-    slug: agent.slug,
-    name: agent.name,
-    description: agent.description ?? agent.name,
-    tags: (agent.metadata as any)?.tags ?? [],
-    system: (agent.metadata as any)?.system ?? false,
-    hidden: (agent.metadata as any)?.hidden ?? false,
-  }));
+  return agents.map((agent) => buildAgentSummaryItem(agent));
 }
 
 interface AgentResolution {
@@ -138,7 +161,10 @@ async function findSimilarAgent(
     };
   }
   // Tag overlap (if provided)
-  const tags = spec.routingHints?.tags ?? [];
+  const tags = mergeStringArrays(
+    normalizeStringArray(spec.routingHints?.tags),
+    normalizeStringArray(spec.metadata?.tags)
+  );
   if (tags.length > 0) {
     const byTags = await collections.agents.findOne({ "metadata.tags": { $in: tags } });
     if (byTags) {
@@ -187,24 +213,74 @@ async function spawnAgentsFromPlan(
         },
       ],
     };
-    const metadata = {
+    const originMetadata = {
       origin: {
         parentRunId: run._id,
         rootRunId: run.rootRunId ?? run._id,
         createdByAgentId: run.agentId ?? null,
         userMessage: run.input.userMessage,
       },
-      tags: spec.routingHints?.tags ?? [],
+      tags: normalizeStringArray(spec.routingHints?.tags),
       card,
     };
+    const specMetadata = spec.metadata ?? {};
+    const mergedTags = mergeStringArrays(
+      normalizeStringArray(originMetadata.tags),
+      normalizeStringArray(specMetadata.tags)
+    );
+    card.skills[0].tags = mergedTags;
+    const mergedMetadata: AgentMetadata = {
+      ...specMetadata,
+      origin: originMetadata.origin,
+      tags: mergedTags,
+      card,
+    };
+    const inferredRole = inferRoleFromTags(mergedTags);
+    if (!mergedMetadata.role && inferredRole) {
+      mergedMetadata.role = inferredRole;
+    }
+    const inferredDomains = extractDomainsFromTags(mergedTags);
+    if (!normalizeStringArray(mergedMetadata.domains).length && inferredDomains.length) {
+      mergedMetadata.domains = inferredDomains;
+    }
 
-  const similar = await findSimilarAgent(spec, collections);
-  if (similar) {
+    const similar = await findSimilarAgent(spec, collections);
+    if (similar) {
       // If the system prompt is identical to latest, just reuse; otherwise, create a new version for same agent.
       const latestVersion = await collections.agentVersions.findOne({
         _id: similar.agent.activeVersionId,
       });
       if (latestVersion && latestVersion.systemPrompt.trim() === spec.systemPrompt.trim()) {
+        if (mergedTags.length > 0 || (specMetadata && Object.keys(specMetadata).length > 0)) {
+          const existingMetadata = similar.agent.metadata ?? {};
+          const existingTags = normalizeStringArray(existingMetadata.tags);
+          const mergedExistingTags = mergeStringArrays(existingTags, mergedTags);
+          const nextMetadata: AgentMetadata = {
+            ...existingMetadata,
+            ...specMetadata,
+            tags: mergedExistingTags,
+            card,
+          };
+          const existingRole =
+            normalizeAgentRole(nextMetadata) ?? inferRoleFromTags(mergedExistingTags);
+          if (!nextMetadata.role && existingRole) {
+            nextMetadata.role = existingRole;
+          }
+          const existingDomains = normalizeStringArray(nextMetadata.domains);
+          if (!existingDomains.length && inferredDomains.length) {
+            nextMetadata.domains = inferredDomains;
+          }
+          await collections.agents.updateOne(
+            { _id: similar.agent._id },
+            {
+              $set: {
+                metadata: nextMetadata,
+                description: spec.description ?? similar.agent.description ?? spec.name,
+                updatedAt: now,
+              },
+            }
+          );
+        }
         resolutions[spec.slug] = {
           requestedSlug: spec.slug,
           slug: similar.agent.slug,
@@ -234,13 +310,30 @@ async function spawnAgentsFromPlan(
         createdAt: now,
         createdBy: { type: "agent", refId: run.agentId ?? undefined },
       });
+      const existingMetadata = similar.agent.metadata ?? {};
+      const existingTags = normalizeStringArray(existingMetadata.tags);
+      const mergedExistingTags = mergeStringArrays(existingTags, mergedTags);
+      const nextMetadata: AgentMetadata = {
+        ...existingMetadata,
+        ...specMetadata,
+        tags: mergedExistingTags,
+        card,
+      };
+      const existingRole = normalizeAgentRole(nextMetadata) ?? inferRoleFromTags(mergedExistingTags);
+      if (!nextMetadata.role && existingRole) {
+        nextMetadata.role = existingRole;
+      }
+      const existingDomains = normalizeStringArray(nextMetadata.domains);
+      if (!existingDomains.length && inferredDomains.length) {
+        nextMetadata.domains = inferredDomains;
+      }
       await collections.agents.updateOne(
         { _id: similar.agent._id },
         {
           $set: {
             activeVersionId: versionId,
             updatedAt: now,
-            metadata: { ...(similar.agent.metadata ?? {}), card },
+            metadata: nextMetadata,
             description: spec.description ?? similar.agent.description ?? spec.name,
           },
         }
@@ -269,7 +362,7 @@ async function spawnAgentsFromPlan(
       createdAt: now,
       updatedAt: now,
       createdBy: { type: "agent", refId: run.agentId ?? undefined },
-      metadata,
+      metadata: mergedMetadata,
     };
     await collections.agents.insertOne(agent);
     await collections.agentVersions.insertOne({
@@ -379,18 +472,23 @@ export async function executeRun(runId: ObjectId, collections: DbCollections): P
 
     const a2aInstruction = [
       "You are an agent in an A2A (agent-to-agent) system.",
-      "You may delegate by returning {\"type\":\"plan\",...} with runsToExecute referencing existing agents by slug.",
-      "Only create new agents when necessary and include them in agentsToCreate.",
-      "Before creating new agents, check Context.availableAgents; if you need a refresh, call Context.a2a.directoryAgent.slug.",
-      "Use Context.availableAgents to decide which agent to call, then reference its slug in runsToExecute.",
-      "Use Context.availableAgents to decide which agent to call, then reference its slug in runsToExecute.",
-      "Context.availableAgents lists known agents; Context.a2a.directoryAgent is a hidden helper you can call for a roster refresh.",
       "All responses must be JSON only with type \"final\" or \"plan\".",
+      "You may delegate by returning {\"type\":\"plan\",...} with runsToExecute referencing existing agents by slug.",
+      "Delegate only when essential for missing expertise or missing data; do not delegate for work you can do.",
+      "If you are a specialist and the request is out of your domain, delegate to a router from Context.availableRouters.",
+      "Never delegate to any slug already present in Context.routingState.visitedSlugs or Context.parentPlan.runsToExecute; use those results instead.",
+      "Avoid ping-pong: do not re-run the same task through multiple agents. If blocked, return a final response with questions or assumptions instead of delegating.",
+      "Only create new agents when necessary and include them in agentsToCreate.",
+      "Context.availableAgentsSummary is provided for scale; only the directory agent sees full Context.availableAgents.",
+      "Context.availableRouters lists router slugs/domains; routers receive Context.availableSpecialists.",
+      "Context.self includes your inferred role/domains/tags; use it to decide if a task is in-scope.",
+      "If you need exact candidates beyond those lists, call Context.a2a.directoryAgent.slug.",
+      "Respect Context.routingPolicy (maxDepth, maxChildren).",
     ].join("\n");
     const instruction =
       resolved.agent.slug === BOOTSTRAP_AGENT_SLUG
         ? a2aInstruction
-        : `${a2aInstruction}\nPrefer {\"type\":\"final\",\"result\":{...}} unless delegation is required.`;
+        : `${a2aInstruction}\nPrefer {\"type\":\"final\",\"result\":{...}} unless delegation is essential.`;
     const systemPrompt = `${resolved.systemPrompt}\n${instruction}`.trim();
     const promptHash = buildPromptHash(systemPrompt, run.input.userMessage);
 
@@ -400,18 +498,54 @@ export async function executeRun(runId: ObjectId, collections: DbCollections): P
     });
 
     const availableAgents = await listAvailableAgents(collections);
+    const availableAgentsSummary = summarizeAvailableAgents(availableAgents);
+    const availableRouters = buildRouterIndex(availableAgents, ROUTER_INDEX_LIMIT);
     const baseContext = run.input.context ?? {};
-    const contextData = {
-      ...baseContext,
-      availableAgents,
-      a2a: {
-        ...(baseContext as any)?.a2a,
-        directoryAgent: {
-          slug: DIRECTORY_AGENT_SLUG,
-          purpose: "Returns the current agent roster.",
-        },
+    const routingState = readRoutingState(baseContext);
+    const routingStateForModel: RoutingState = {
+      visitedSlugs: mergeStringArrays(routingState.visitedSlugs, [resolved.agent.slug]),
+      routingDepth: routingState.routingDepth,
+    };
+    const contextData: Record<string, unknown> = { ...baseContext };
+    delete (contextData as any).availableAgents;
+    contextData.availableAgentsSummary = availableAgentsSummary;
+    contextData.availableRouters = availableRouters;
+    contextData.routingPolicy = ROUTING_POLICY;
+    contextData.routingState = routingStateForModel;
+    contextData.self = buildAgentSummaryItem({
+      slug: resolved.agent.slug,
+      name: resolved.agent.name,
+      description: resolved.agent.description,
+      metadata: resolved.agent.metadata ?? undefined,
+    });
+    contextData.a2a = {
+      ...(baseContext as any)?.a2a,
+      directoryAgent: {
+        slug: DIRECTORY_AGENT_SLUG,
+        purpose: "Returns the current agent roster.",
       },
     };
+    if (normalizeAgentRole(resolved.agent.metadata) === "router") {
+      const agentSummary = buildAgentSummaryItem({
+        slug: resolved.agent.slug,
+        name: resolved.agent.name,
+        description: resolved.agent.description,
+        metadata: resolved.agent.metadata ?? undefined,
+      });
+      const routerCaps = normalizeStringArray(resolved.agent.metadata?.capabilities ?? []);
+      const routerTags = normalizeStringArray(resolved.agent.metadata?.tags ?? []);
+      const isCrossDomain =
+        routerCaps.includes("cross-domain") || routerTags.includes("cross-domain");
+      const domainFilter = isCrossDomain ? [] : agentSummary.domains;
+      contextData.availableSpecialists = buildSpecialistIndex(
+        availableAgents,
+        SPECIALIST_INDEX_LIMIT,
+        domainFilter
+      );
+    }
+    if (resolved.agent.slug === DIRECTORY_AGENT_SLUG) {
+      contextData.availableAgents = availableAgents;
+    }
     const userContent = `${run.input.userMessage}\n\nContext:\n${JSON.stringify(
       contextData,
       null,
@@ -457,6 +591,60 @@ export async function executeRun(runId: ObjectId, collections: DbCollections): P
       throw new Error("Plan response missing agentsToCreate/runsToExecute arrays");
     }
 
+    const resolvedSummary = buildAgentSummaryItem({
+      slug: resolved.agent.slug,
+      name: resolved.agent.name,
+      description: resolved.agent.description,
+      metadata: resolved.agent.metadata ?? undefined,
+    });
+    const agentRole = resolvedSummary.role;
+    if (agentRole === "specialist") {
+      if (agentsToCreate.length > 0) {
+        throw new Error("Specialist agents cannot create new agents; return type final instead");
+      }
+      if (runsToExecute.length > 0) {
+        if (runsToExecute.length > 1) {
+          throw new Error("Specialist agents may delegate to at most one router");
+        }
+        const routerSlugs = new Set(
+          availableAgents.filter((agent) => agent.role === "router").map((agent) => agent.slug)
+        );
+        const invalid = runsToExecute.filter((runSpec) => !routerSlugs.has(runSpec.slug));
+        if (invalid.length > 0) {
+          throw new Error(
+            `Specialist agents may only delegate to routers; invalid slugs: ${invalid
+              .map((runSpec) => runSpec.slug)
+              .join(", ")}`
+          );
+        }
+      }
+    }
+    if (routingStateForModel.routingDepth >= ROUTING_POLICY.maxDepth && runsToExecute.length > 0) {
+      throw new Error(
+        `Routing depth exceeded (depth: ${routingStateForModel.routingDepth}, max: ${ROUTING_POLICY.maxDepth})`
+      );
+    }
+    if (runsToExecute.length > ROUTING_POLICY.maxChildren) {
+      throw new Error(
+        `Too many child runs requested (requested: ${runsToExecute.length}, max: ${ROUTING_POLICY.maxChildren})`
+      );
+    }
+    const visitedSlugs = new Set(routingStateForModel.visitedSlugs);
+    const requestedSlugs = new Set<string>();
+    for (const runSpec of runsToExecute) {
+      const slug = runSpec?.slug;
+      if (!slug || typeof slug !== "string") {
+        throw new Error("runsToExecute entries require slug");
+      }
+      if (requestedSlugs.has(slug)) {
+        throw new Error(`Duplicate slug in runsToExecute: ${slug}`);
+      }
+      if (visitedSlugs.has(slug)) {
+        throw new Error(`Slug already executed in this run tree: ${slug}`);
+      }
+      requestedSlugs.add(slug);
+    }
+
     await enforceSpawnCap(run, runsToExecute.length, collections);
     await emit(emitCtx, "SPAWN_AGENT_REQUEST", {
       agentsToCreate: agentsToCreate.map((a: any) => a.slug),
@@ -471,11 +659,22 @@ export async function executeRun(runId: ObjectId, collections: DbCollections): P
     }
 
     const childOutputs: Record<string, unknown> = {};
+    const parentPlanSlugs = runsToExecute
+      .map((child) => child?.slug)
+      .filter((slug): slug is string => typeof slug === "string" && slug.length > 0);
+    const visitedForChildren = new Set(routingStateForModel.visitedSlugs);
     for (const child of runsToExecute) {
+      const childVisited = new Set([...visitedForChildren, ...parentPlanSlugs]);
+      childVisited.add(child.slug);
       const contextData: Record<string, unknown> = {
         parentPlan: parsed,
-        previousResults: childOutputs,
+        previousResults: summarizePreviousResults(childOutputs),
         explicitContext: child.context ?? null,
+        routingPolicy: ROUTING_POLICY,
+        routingState: {
+          visitedSlugs: Array.from(childVisited),
+          routingDepth: routingStateForModel.routingDepth + 1,
+        },
       };
       const childRunId = await createChildRun(
         run,
@@ -485,6 +684,7 @@ export async function executeRun(runId: ObjectId, collections: DbCollections): P
         contextData,
         resolutions
       );
+      visitedForChildren.add(child.slug);
       await emit(emitCtx, "CHILD_RUN_STARTED", { childRunId: childRunId.toString(), slug: child.slug });
       try {
         await executeRun(childRunId, collections);

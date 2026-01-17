@@ -7,6 +7,18 @@ export interface CreatedBy {
   refId?: ObjectId;
 }
 
+export type AgentRole = "system" | "router" | "specialist";
+
+export interface AgentMetadata {
+  role?: AgentRole;
+  domains?: string[];
+  capabilities?: string[];
+  tags?: string[];
+  hidden?: boolean;
+  system?: boolean;
+  [key: string]: unknown;
+}
+
 export interface AgentDoc {
   _id: ObjectId;
   slug: string;
@@ -16,7 +28,7 @@ export interface AgentDoc {
   createdAt: Date;
   updatedAt: Date;
   createdBy: CreatedBy;
-  metadata?: Record<string, unknown>;
+  metadata?: AgentMetadata;
 }
 
 export interface AgentVersionDoc {
@@ -94,6 +106,7 @@ export interface PlanAgentSpec {
     preferredModel?: string;
     temperature?: number;
   };
+  metadata?: AgentMetadata;
 }
 
 export interface PlanRunSpec {

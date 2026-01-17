@@ -64,6 +64,7 @@ function buildMockPlan(request: ModelRequest): AgentResponse {
     description: "Echoes the user input inside a JSON final result.",
     systemPrompt: `You are Mock Echo. Output JSON only: {"type":"final","result":{"echo":<string>,"notes":<array>}}. Echo the userMessage field verbatim and add 2 bullet notes.`,
     routingHints: { tags: ["mock"], preferredModel: DEFAULT_MODEL },
+    metadata: { role: "specialist", domains: ["mock"], tags: ["mock", "specialist"] },
     ioSchema: { output: {} },
   };
 
