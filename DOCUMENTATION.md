@@ -35,6 +35,10 @@ JSON-RPC API (POST /rpc):
 - `agent.version.get`: {versionId, agentId?} -> {version}
 - `agent.updatePrompt`: {agentId, newSystemPrompt, editor} -> {agentVersionId, version}
 - `agent.setActiveVersion`: {agentId, versionId} -> {activeVersionId}
+- `workflow.save`: {workflowId?, name, description?, nodes: [{id, agentSlug, label?, includeUserPrompt?}]} -> {workflowId}
+- `workflow.list`: {} -> {workflows}
+- `workflow.get`: {workflowId} -> {workflow}
+- `workflow.run`: {workflowId, sessionId, userMessage} -> {runs: [{nodeId, agentSlug, runId, status, output}], finalOutput}
 - `run.start`: {sessionId, agentSlug?, agentId?, userMessage, parentRunId?} -> {runId}
 - `run.get`: {runId} -> {run}
 - `run.events`: {runId, sinceSeq?} -> {events, nextSeq}
@@ -73,6 +77,7 @@ Key screens (`src/App.tsx`):
 - Playground: pick agent, send prompt, stream events, view final JSON.
 - Run Inspector: load session runs (tree), click run to view events/output.
 - Agent Manager: list agents, view versions, set active version, create new versions (update prompt).
+- Workflow Builder: drag agents into a linear chain, toggle “include user prompt,” save/load workflows, run them sequentially, see per-node completion checkboxes and final output modal.
 API client (`src/api.ts`): wrappers around JSON-RPC methods.
 
 Typical workflows

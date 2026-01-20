@@ -418,6 +418,54 @@ pre {
   margin: 4px 0;
 }
 
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  background: #e0f2ef;
+  border: 1px dashed #2a7b6f;
+  padding: 6px 10px;
+  border-radius: 999px;
+  cursor: grab;
+}
+
+.dropzone {
+  margin-top: 8px;
+  padding: 12px;
+  border: 1px dashed #2a7b6f;
+  border-radius: 8px;
+  min-height: 60px;
+  background: #f7fdfb;
+}
+
+.modal {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.4);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 10;
+}
+
+.modal-body {
+  background: #ffffff;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  padding: 16px;
+  width: min(720px, 90vw);
+  max-height: 80vh;
+  overflow: auto;
+  box-shadow: var(--shadow);
+}
+
+.flow-wrapper {
+  height: 480px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: #f7f8fb;
+}
+
 .alert {
   background: #fff1f1;
   color: #991b1b;

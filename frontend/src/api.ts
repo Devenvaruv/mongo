@@ -51,6 +51,18 @@ export const Api = {
       versionId,
     });
   },
+  async saveWorkflow(payload: { workflowId?: string; name: string; description?: string; nodes: any[] }) {
+    return rpc<{ workflowId: string }>("workflow.save", payload);
+  },
+  async listWorkflows() {
+    return rpc<{ workflows: any[] }>("workflow.list", {});
+  },
+  async getWorkflow(workflowId: string) {
+    return rpc<{ workflow: any }>("workflow.get", { workflowId });
+  },
+  async runWorkflow(payload: { workflowId: string; sessionId: string; userMessage: string }) {
+    return rpc<{ runs: any[]; finalOutput: any }>("workflow.run", payload);
+  },
   async getAgentCard(slug: string) {
     const resp = await axios.get(`${BASE_URL}/.well-known/agent-card.json`, {
       params: { slug },

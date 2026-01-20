@@ -1,6 +1,19 @@
-import { useEffect, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useState } from "react";
 import { Api } from "./api";
 import "./index.css";
+import ReactFlow, {
+  Background,
+  Controls,
+  MiniMap,
+  addEdge,
+  useEdgesState,
+  useNodesState,
+  Connection,
+  Edge,
+  Node,
+} from "reactflow";
+import "reactflow/dist/style.css";
+import dagre from "dagre";
 
 type AgentOption = { agentId: string; slug: string; name: string };
 type SessionState = { id: string; expiresAt: number };
@@ -20,6 +33,27 @@ type Delegation = {
 };
 
 const SESSION_TTL_MS = 30 * 60 * 1000;
+
+const dagreGraph = new dagre.graphlib.Graph();
+dagreGraph.setDefaultEdgeLabel(() => ({}));
+const nodeWidth = 180;
+const nodeHeight = 60;
+
+function layoutNodesForFlow(nodes: Node<any>[], edges: Edge[]) {
+  dagreGraph.setGraph({ rankdir: "LR", nodesep: 60, ranksep: 100 });
+  nodes.forEach((node) => dagreGraph.setNode(node.id, { width: nodeWidth, height: nodeHeight }));
+  edges.forEach((edge) => dagreGraph.setEdge(edge.source, edge.target));
+  dagre.layout(dagreGraph);
+  return nodes.map((node) => {
+    const pos = dagreGraph.node(node.id);
+    return {
+      ...node,
+      position: { x: pos.x - nodeWidth / 2, y: pos.y - nodeHeight / 2 },
+      targetPosition: "left" as const,
+      sourcePosition: "right" as const,
+    };
+  });
+}
 
 const normalizeStatus = (value?: string) => {
   const next = value?.toLowerCase();
@@ -1000,8 +1034,444 @@ function AgentManager() {
   );
 }
 
+type WorkflowNode = { id: string; agentSlug: string; label: string; includeUserPrompt: boolean };
+type WorkflowEdge = { from: string; to: string };
+type RFNodeData = { label: string; agentSlug: string; includeUserPrompt: boolean };
+
+function WorkflowBuilder({ sessionId, setSessionId, endSession }: SessionProps) {
+  const [agents, setAgents] = useState<AgentOption[]>([]);
+  const [wfNodes, setWfNodes] = useState<WorkflowNode[]>([]);
+  const [nodes, setNodes, onNodesChange] = useNodesState<RFNodeData>([]);
+  const [edges, setEdges, onEdgesChange] = useEdgesState([]);
+  const [workflows, setWorkflows] = useState<any[]>([]);
+  const [selectedWorkflowId, setSelectedWorkflowId] = useState<string>("");
+  const [workflowName, setWorkflowName] = useState<string>("");
+  const [workflowDescription, setWorkflowDescription] = useState<string>("");
+  const [selectedNodeId, setSelectedNodeId] = useState<string>("");
+  const [userMessage, setUserMessage] = useState<string>("Run my chain with this prompt");
+  const [runResults, setRunResults] = useState<any[]>([]);
+  const [finalOutput, setFinalOutput] = useState<any>(null);
+  const [modalContent, setModalContent] = useState<any | null>(null);
+  const [modalTitle, setModalTitle] = useState<string>("");
+  const [message, setMessage] = useState<string>("");
+  const [error, setError] = useState<string>("");
+  const [loading, setLoading] = useState(false);
+
+  const loadAgents = async () => {
+    const resp = await Api.listAgents();
+    const opts: AgentOption[] = resp.agents
+      .filter((a) => a.slug !== "bootstrap")
+      .map((a) => ({ agentId: a.agentId, slug: a.slug, name: a.name }));
+    setAgents(opts);
+  };
+
+  const loadWorkflows = async () => {
+    const resp = await Api.listWorkflows();
+    setWorkflows(resp.workflows);
+  };
+
+  useEffect(() => {
+    loadAgents().catch((err) => setError(err.message));
+    loadWorkflows().catch((err) => setError(err.message));
+  }, []);
+
+  const handleDragStart = (slug: string) => (e: React.DragEvent) => {
+    e.dataTransfer.setData("text/plain", slug);
+  };
+
+  const handleDrop = (e: React.DragEvent) => {
+    e.preventDefault();
+    const slug = e.dataTransfer.getData("text/plain");
+    if (!slug) return;
+    addNode(slug, { x: 40, y: 40 + nodes.length * 60 });
+  };
+
+  const addNode = (slug: string, position?: { x: number; y: number }) => {
+    const agent = agents.find((a) => a.slug === slug);
+    if (!agent) return;
+    const id = `${slug}-${Date.now()}`;
+    const newWfNode = { id, agentSlug: slug, label: agent.name, includeUserPrompt: false };
+    setWfNodes((prev) => [...prev, newWfNode]);
+    const rfNode: Node<RFNodeData> = {
+      id,
+      type: "default",
+      position: position || { x: 0, y: 0 },
+      data: { label: agent.name, agentSlug: slug, includeUserPrompt: false },
+    };
+    setNodes((nds) => nds.concat(rfNode));
+  };
+
+  const removeNode = (id: string) => {
+    setWfNodes((prev) => prev.filter((n) => n.id !== id));
+
+    setNodes((nds) => nds.filter((n) => n.id !== id));
+    setEdges((eds) => eds.filter((e) => e.source !== id && e.target !== id));
+  };
+
+  const toggleIncludePrompt = (id: string) => {
+    setWfNodes((prev) =>
+      prev.map((n) => (n.id === id ? { ...n, includeUserPrompt: !n.includeUserPrompt } : n))
+    );
+    setNodes((nds) =>
+      nds.map((n) =>
+        n.id === id ? { ...n, data: { ...n.data, includeUserPrompt: !n.data.includeUserPrompt } } : n
+      )
+    );
+  };
+
+  const saveWorkflow = async () => {
+    if (!workflowName.trim() || nodes.length === 0) {
+      setError("Name and at least one node are required");
+      return;
+    }
+    setError("");
+    setMessage("");
+    const payload = {
+      workflowId: selectedWorkflowId || undefined,
+      name: workflowName,
+      description: workflowDescription,
+      nodes: wfNodes.map((n) => {
+        const parents = edges.filter((e: any) => e.target === n.id).map((e: any) => e.source);
+        return {
+          id: n.id,
+          agentSlug: n.agentSlug,
+          label: n.label,
+          includeUserPrompt: n.includeUserPrompt,
+          parents,
+        };
+      }),
+    };
+    try {
+      const resp = await Api.saveWorkflow(payload);
+      setSelectedWorkflowId(resp.workflowId);
+      setMessage("Workflow saved");
+      await loadWorkflows();
+    } catch (err: any) {
+      setError(err.message);
+    }
+  };
+
+  const loadWorkflow = async (workflowId: string) => {
+    if (!workflowId) return;
+    try {
+      const resp = await Api.getWorkflow(workflowId);
+      const wf = resp.workflow;
+      setSelectedWorkflowId(workflowId);
+      setWorkflowName(wf.name || "");
+      setWorkflowDescription(wf.description || "");
+      const newWfNodes: WorkflowNode[] = (wf.nodes || []).map((n: any) => ({
+        id: n.id,
+        agentSlug: n.agentSlug,
+        label: n.label ?? n.agentSlug,
+        includeUserPrompt: !!n.includeUserPrompt,
+      }));
+      const newEdges: WorkflowEdge[] = [];
+      (wf.nodes || []).forEach((n: any) => {
+        (n.parents || []).forEach((p: string) => newEdges.push({ from: p, to: n.id }));
+      });
+      setWfNodes(newWfNodes);
+      const rfEdges: Edge[] = newEdges.map((e) => ({
+        id: `${e.from}-${e.to}`,
+        source: e.from,
+        target: e.to,
+      }));
+      const rfNodes: Node<RFNodeData>[] = newWfNodes.map((n) => ({
+        id: n.id,
+        type: "default",
+        position: { x: 0, y: 0 },
+        data: { label: n.label, agentSlug: n.agentSlug, includeUserPrompt: n.includeUserPrompt },
+      }));
+      setNodes(layoutNodesForFlow(rfNodes, rfEdges));
+      setEdges(rfEdges);
+      setMessage("Workflow loaded");
+    } catch (err: any) {
+      setError(err.message);
+    }
+  };
+
+  const ensureSession = async () => {
+    if (sessionId) return sessionId;
+    const resp = await Api.createSession("Workflow");
+    setSessionId(resp.sessionId);
+    return resp.sessionId;
+  };
+
+  const runWorkflow = async () => {
+    if (!selectedWorkflowId) {
+      setError("Save or select a workflow first");
+      return;
+    }
+    const sid = await ensureSession();
+    if (!sid) return;
+    setLoading(true);
+    setError("");
+    setMessage("");
+    setRunResults([]);
+    setFinalOutput(null);
+    setModalContent(null);
+    setModalTitle("");
+    try {
+      const resp = await Api.runWorkflow({
+        workflowId: selectedWorkflowId,
+        sessionId: sid,
+        userMessage,
+      });
+      setRunResults(resp.runs || []);
+      setFinalOutput(resp.finalOutput ?? null);
+      setMessage("Workflow executed");
+    } catch (err: any) {
+      setError(err.message);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const allSucceeded = runResults.length > 0 && runResults.every((r) => r.status === "succeeded");
+
+  return (
+    <section className="card">
+      <div className="card-header">
+        <div>
+          <h2 className="card-title">Workflow Builder</h2>
+          <p className="card-subtitle">Drag agents to build a chain and run it sequentially.</p>
+        </div>
+        <div className="row">
+          <div className="badge">Session: {sessionId || "none"}</div>
+          <button className="btn ghost" onClick={endSession} disabled={!sessionId}>
+            End Session
+          </button>
+        </div>
+      </div>
+
+      <div className="grid-2">
+        <div className="stack">
+          <div className="subcard">
+            <div className="subheader">Workflow</div>
+            <div className="field">
+              <label className="label">Select Workflow</label>
+              <select
+                className="input"
+                value={selectedWorkflowId}
+                onChange={(e) => loadWorkflow(e.target.value)}
+              >
+                <option value="">New workflow</option>
+                {workflows.map((wf) => (
+                  <option key={wf._id} value={wf._id}>
+                    {wf.name}
+                  </option>
+                ))}
+              </select>
+            </div>
+            <div className="field">
+              <label className="label">Name</label>
+              <input
+                className="input"
+                value={workflowName}
+                onChange={(e) => setWorkflowName(e.target.value)}
+                placeholder="Workflow name"
+              />
+            </div>
+            <div className="field">
+              <label className="label">Description</label>
+              <input
+                className="input"
+                value={workflowDescription}
+                onChange={(e) => setWorkflowDescription(e.target.value)}
+                placeholder="Optional description"
+              />
+            </div>
+            <div className="row">
+              <button className="btn" onClick={saveWorkflow} disabled={nodes.length === 0}>
+                Save Workflow
+              </button>
+              <button
+                className="btn ghost"
+                onClick={() => {
+                  setNodes([]);
+                  setEdges([]);
+                  setWfNodes([]);
+                  setSelectedNodeId("");
+                }}
+              >
+                Clear Nodes
+              </button>
+              {message && <span className="badge subtle">{message}</span>}
+              {error && <span className="badge subtle">{error}</span>}
+            </div>
+          </div>
+
+          <div className="subcard">
+            <div className="subheader">Agents Palette (drag into canvas)</div>
+            <div className="chips">
+              {agents.map((agent) => (
+                <div
+                  key={agent.slug}
+                  className="chip"
+                  draggable
+                  onDragStart={handleDragStart(agent.slug)}
+                  onClick={() => addNode(agent.slug)}
+                >
+                  {agent.name} ({agent.slug})
+                </div>
+              ))}
+            </div>
+            <div
+              className="dropzone"
+              onDragOver={(e) => e.preventDefault()}
+              onDrop={handleDrop}
+            >
+              <div className="muted">Drop agents here to build the chain</div>
+            </div>
+          </div>
+        </div>
+
+        <div className="stack">
+         <div className="subcard">
+            <div className="subheader">Canvas</div>
+            <div className="flow-wrapper">
+              <ReactFlow
+                nodes={layoutNodesForFlow(nodes, edges)}
+                edges={edges}
+                onNodesChange={onNodesChange}
+                onEdgesChange={onEdgesChange}
+                onConnect={(conn) => setEdges((eds) => addEdge(conn, eds))}
+                onNodeClick={(_, node) => setSelectedNodeId(node.id)}
+                onDrop={(event) => {
+                  event.preventDefault();
+                  const slug = event.dataTransfer.getData("text/plain");
+                  if (!slug) return;
+                  const bounds = (event.target as HTMLDivElement).getBoundingClientRect();
+                  const position = { x: event.clientX - bounds.left, y: event.clientY - bounds.top };
+                  addNode(slug, position);
+                }}
+                onDragOver={(event) => event.preventDefault()}
+                fitView
+              >
+                <Background gap={16} />
+                <MiniMap />
+                <Controls />
+              </ReactFlow>
+            </div>
+            <div className="muted" style={{ marginTop: 6 }}>
+              Drag agents onto the canvas. Connect nodes by dragging edges.
+            </div>
+          </div>
+
+          <div className="subcard">
+            <div className="subheader">Node Inspector</div>
+            {!selectedNodeId && <div className="muted">Select a node in the canvas.</div>}
+            {selectedNodeId && (
+              <div className="stack">
+                {(() => {
+                  const node = wfNodes.find((n) => n.id === selectedNodeId);
+                  if (!node) return <div className="muted">Node not found.</div>;
+                  return (
+                    <>
+                      <div className="row">
+                        <strong>{node.label}</strong>
+                        <span className="muted">({node.agentSlug})</span>
+                        <button className="btn ghost" onClick={() => removeNode(node.id)}>
+                          Remove
+                        </button>
+                      </div>
+                      <label className="checkbox">
+                        <input
+                          type="checkbox"
+                          checked={node.includeUserPrompt}
+                          onChange={() => toggleIncludePrompt(node.id)}
+                        />
+                        <span>Include original user prompt</span>
+                      </label>
+                    </>
+                  );
+                })()}
+              </div>
+            )}
+          </div>
+
+          <div className="subcard">
+            <div className="subheader">Run Workflow</div>
+            <div className="field">
+              <label className="label">User Prompt</label>
+              <textarea
+                className="textarea"
+                rows={4}
+                value={userMessage}
+                onChange={(e) => setUserMessage(e.target.value)}
+              />
+            </div>
+            <button
+              className="btn primary"
+              onClick={runWorkflow}
+              disabled={nodes.length === 0 || loading}
+            >
+              {loading ? "Running..." : "Run workflow"}
+            </button>
+            {runResults.length > 0 && (
+              <div className="stack" style={{ marginTop: 8 }}>
+                {runResults.map((r) => (
+                  <div key={r.nodeId} className="row">
+                    <label className="checkbox">
+                      <input type="checkbox" checked={r.status === "succeeded"} readOnly />
+                      <span>
+                        {r.agentSlug} — {r.status} (run {r.runId})
+                      </span>
+                    </label>
+                    {r.output && (
+                      <button
+                        className="btn ghost"
+                        onClick={() => {
+                          setModalTitle(`${r.agentSlug} output`);
+                          setModalContent(r.output);
+                        }}
+                      >
+                        View output
+                      </button>
+                    )}
+                  </div>
+                ))}
+                {allSucceeded && (
+                  <button
+                    className="btn ghost"
+                    onClick={() => {
+                      setModalTitle("Final workflow output");
+                      setModalContent(finalOutput ?? {});
+                    }}
+                  >
+                    Show final output
+                  </button>
+                )}
+              </div>
+            )}
+          </div>
+        </div>
+      </div>
+
+      {modalContent !== null && (
+        <div className="modal">
+          <div className="modal-body">
+            <div className="row">
+              <strong>{modalTitle || "Output"}</strong>
+              <button
+                className="btn ghost"
+                onClick={() => {
+                  setModalContent(null);
+                  setModalTitle("");
+                }}
+              >
+                Close
+              </button>
+            </div>
+            <pre className="code-block">{JSON.stringify(modalContent ?? {}, null, 2)}</pre>
+          </div>
+        </div>
+      )}
+    </section>
+  );
+}
+
 export default function App() {
-  const [tab, setTab] = useState<"home" | "play" | "inspect" | "agents">("home");
+  const [tab, setTab] = useState<"home" | "play" | "inspect" | "agents" | "builder">("home");
   const [session, setSession] = useState<SessionState | null>(null);
 
   useEffect(() => {
@@ -1057,6 +1527,12 @@ export default function App() {
           >
             Agent Manager
           </button>
+          <button
+            className={`tab ${tab === "builder" ? "active" : ""}`}
+            onClick={() => setTab("builder")}
+          >
+            Workflow Builder
+          </button>
         </div>
       </header>
       <main className="content">
@@ -1072,6 +1548,13 @@ export default function App() {
         )}
         {tab === "inspect" && <RunInspector />}
         {tab === "agents" && <AgentManager />}
+        {tab === "builder" && (
+          <WorkflowBuilder
+            sessionId={session?.id ?? ""}
+            setSessionId={startSession}
+            endSession={endSession}
+          />
+        )}
       </main>
     </div>
   );

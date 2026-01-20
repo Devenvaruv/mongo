@@ -12,6 +12,8 @@ import {
   AgentVersionDoc,
   RunDoc,
   SessionDoc,
+  WorkflowDoc,
+  WorkflowNode,
 } from "./models";
 import { executeRun } from "./runEngine";
 
@@ -215,7 +217,7 @@ async function resolveAgent(params: any, collections: DbCollections) {
 }
 
 async function handleRunStart(params: any, { collections }: { collections: DbCollections }) {
-  const { sessionId, userMessage, parentRunId } = params || {};
+  const { sessionId, userMessage, parentRunId, context } = params || {};
   if (!sessionId || !userMessage) {
     throw new Error("sessionId and userMessage are required");
   }
@@ -244,7 +246,7 @@ async function handleRunStart(params: any, { collections }: { collections: DbCol
     status: "running",
     parentRunId: parentRunId ? new ObjectId(parentRunId) : null,
     rootRunId,
-    input: { userMessage },
+    input: { userMessage, context },
     startedAt: now,
   };
   await collections.runs.insertOne(runDoc);
@@ -314,6 +316,163 @@ async function handleRunTree(params: any, { collections }: { collections: DbColl
   return { runs: runs.map(serializeDoc) };
 }
 
+function normalizeNodes(nodes: any[]): WorkflowNode[] {
+  return (nodes || []).map((n) => ({
+    id: n.id || n.agentSlug || new ObjectId().toString(),
+    agentSlug: n.agentSlug,
+    label: n.label ?? n.agentSlug,
+    includeUserPrompt: !!n.includeUserPrompt,
+    parents: Array.isArray(n.parents) ? n.parents : [],
+  }));
+}
+
+async function handleWorkflowSave(params: any, { collections }: { collections: DbCollections }) {
+  const { workflowId, name, description, nodes } = params || {};
+  if (!name || !Array.isArray(nodes) || nodes.length === 0) {
+    throw new Error("name and nodes[] are required");
+  }
+  const normalizedNodes = normalizeNodes(nodes);
+  const now = new Date();
+  if (workflowId) {
+    const _id = new ObjectId(workflowId);
+    await collections.workflows.updateOne(
+      { _id },
+      { $set: { name, description, nodes: normalizedNodes, updatedAt: now } },
+      { upsert: true }
+    );
+    return { workflowId };
+  }
+  const _id = new ObjectId();
+  const doc: WorkflowDoc = {
+    _id,
+    name,
+    description,
+    nodes: normalizedNodes,
+    createdAt: now,
+    updatedAt: now,
+  };
+  await collections.workflows.insertOne(doc);
+  return { workflowId: _id.toString() };
+}
+
+async function handleWorkflowList(_params: any, { collections }: { collections: DbCollections }) {
+  const workflows = await collections.workflows
+    .find({}, { projection: { name: 1, description: 1, updatedAt: 1 } })
+    .sort({ updatedAt: -1 })
+    .toArray();
+  return { workflows: workflows.map(serializeDoc) };
+}
+
+async function handleWorkflowGet(params: any, { collections }: { collections: DbCollections }) {
+  const { workflowId } = params || {};
+  if (!workflowId) {
+    throw new Error("workflowId is required");
+  }
+  const wf = await collections.workflows.findOne({ _id: new ObjectId(workflowId) });
+  if (!wf) {
+    throw new Error("Workflow not found");
+  }
+  return { workflow: serializeDoc(wf) };
+}
+
+async function startRunInternal(
+  payload: {
+    sessionId: ObjectId;
+    agentSlug?: string;
+    agentId?: ObjectId;
+    userMessage: string;
+    parentRunId?: ObjectId;
+    context?: Record<string, unknown>;
+  },
+  collections: DbCollections
+): Promise<{ runId: ObjectId; output?: any; status: string }> {
+  const params: any = {
+    sessionId: payload.sessionId.toString(),
+    agentSlug: payload.agentSlug,
+    agentId: payload.agentId?.toString(),
+    userMessage: payload.userMessage,
+    parentRunId: payload.parentRunId?.toString(),
+    context: payload.context,
+  };
+  const result = await handleRunStart(params, { collections });
+  const runId = new ObjectId(result.runId);
+  const runDoc = await collections.runs.findOne({ _id: runId });
+  return { runId, output: runDoc?.output?.result, status: runDoc?.status ?? "unknown" };
+}
+
+async function handleWorkflowRun(params: any, { collections }: { collections: DbCollections }) {
+  const { workflowId, sessionId, userMessage } = params || {};
+  if (!workflowId || !sessionId || !userMessage) {
+    throw new Error("workflowId, sessionId, userMessage are required");
+  }
+  const session = await collections.sessions.findOne({ _id: new ObjectId(sessionId) });
+  if (!session) {
+    throw new Error("Session not found");
+  }
+  const wf = await collections.workflows.findOne({ _id: new ObjectId(workflowId) });
+  if (!wf) {
+    throw new Error("Workflow not found");
+  }
+  if (!wf.nodes || wf.nodes.length === 0) {
+    throw new Error("Workflow has no nodes");
+  }
+  const nodeMap = new Map<string, WorkflowNode>();
+  wf.nodes.forEach((n: WorkflowNode) => nodeMap.set(n.id, n));
+  const outputs: Record<string, any> = {};
+  const statuses: Record<string, string> = {};
+  const results: any[] = [];
+  const visited = new Set<string>();
+
+  const topo = [...wf.nodes]; // assume user arranged; no parallelism, just iterate and check parents
+  for (const node of topo) {
+    const parents = node.parents || [];
+    const parentOutputs: Record<string, any> = {};
+    let parentsDone = true;
+    parents.forEach((pid) => {
+      if (!(pid in outputs)) {
+        parentsDone = false;
+      } else {
+        parentOutputs[pid] = outputs[pid];
+      }
+    });
+    if (!parentsDone) {
+      throw new Error(`Parent outputs missing for node ${node.id} (${node.agentSlug})`);
+    }
+
+    const includeUserPrompt = node.includeUserPrompt ?? false;
+    const nodeMessage = includeUserPrompt
+      ? userMessage
+      : `Continue from previous agent output and produce the next step.`;
+    const context = {
+      parentOutputs,
+      workflowUserMessage: userMessage,
+      nodeLabel: node.label ?? node.agentSlug,
+    };
+    const { runId, output, status } = await startRunInternal(
+      {
+        sessionId: session._id,
+        agentSlug: node.agentSlug,
+        userMessage: nodeMessage,
+        context,
+      },
+      collections
+    );
+    outputs[node.id] = output;
+    statuses[node.id] = status;
+    visited.add(node.id);
+    results.push({
+      nodeId: node.id,
+      agentSlug: node.agentSlug,
+      runId: runId.toString(),
+      status,
+      output,
+    });
+  }
+
+  const finalOutput = results.length > 0 ? results[results.length - 1].output : null;
+  return { runs: results, finalOutput };
+}
+
 const handlers: Record<string, RpcHandler> = {
   "session.create": handleSessionCreate,
   "session.list": handleSessionList,
@@ -322,6 +481,10 @@ const handlers: Record<string, RpcHandler> = {
   "agent.updatePrompt": handleAgentUpdatePrompt,
   "agent.version.get": handleAgentVersionGet,
   "agent.setActiveVersion": handleAgentSetActiveVersion,
+  "workflow.save": handleWorkflowSave,
+  "workflow.list": handleWorkflowList,
+  "workflow.get": handleWorkflowGet,
+  "workflow.run": handleWorkflowRun,
   "run.start": handleRunStart,
   "run.get": handleRunGet,
   "run.events": handleRunEvents,
