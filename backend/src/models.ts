@@ -143,3 +143,20 @@ export interface ModelRequest {
 export interface ModelResponse {
   content: string;
 }
+
+export interface WorkflowNode {
+  id: string;
+  agentSlug: string;
+  label?: string;
+  includeUserPrompt?: boolean;
+  parents?: string[];
+}
+
+export interface WorkflowDoc {
+  _id: ObjectId;
+  name: string;
+  description?: string;
+  nodes: WorkflowNode[];
+  createdAt: Date;
+  updatedAt: Date;
+}
